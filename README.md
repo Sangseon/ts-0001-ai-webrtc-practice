@@ -1,24 +1,102 @@
-# ts-0001-ai-webrtc-practice
+# WebRTC Conference Practice
 
-Codex AI를 활용한 TypeScript 기반 WebRTC 바이브 코딩 실습 프로젝트.
+## Overview
 
-## Documents
+TypeScript와 Codex를 활용해 SFU 기반 다자간 화상회의를 단계별로 구현하는 실습 프로젝트다.
+
+WebSocket 제어 메시지와 WebRTC 미디어 전송의 역할, 참가자 상태와 미디어 자원의 관리 방식을 학습한다.
+현재는 TypeScript 실행 기반과 SFU worker·Router 실행 검증까지 완료했다.
+
+Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai-webrtc-practice`다.
+
+### Topics
+
+- typescript
+- webrtc
+- sfu
+- mediasoup
+- real-time-communication
+
+## Focus
+
+- TypeScript strict 모드의 클라이언트·서버 실행 구조 이해
+- SFU worker와 Router의 역할 및 자원 정리 과정 확인
+- Signaling과 영상·음성 전송의 역할 구분
+- 참가자 입장·퇴장과 미디어 연결 상태 관리
+
+학습 목표 중 현재 구현한 범위는 아래 Scope에 구분한다.
+
+## Tech Stack
+
+| 영역 | 현재 사용 기술 |
+| --- | --- |
+| 언어 | TypeScript 7.0.2, strict 모드 |
+| 클라이언트 | React 19.3.1, Vite 8.3.5 |
+| 서버 | Node.js 24.22.1, 기본 HTTP 모듈 |
+| SFU 실행 검증 | mediasoup 3.32.0 |
+
+## Scope
+
+| 구분 | 내용 | 상태 |
+| --- | --- | --- |
+| 실행 기반 | React 기본 화면, HTTP 상태 확인, 개발 실행·타입 검사·빌드 | 완료 (Step 01) |
+| SFU 실행 검증 | worker·Router 생성·종료, Opus·VP8 설정, 반복 실행·오류 정리 | 완료 (Step 02) |
+| 회의·미디어 | 회의방 생성·입장·퇴장, SFU 기반 다자간 영상·음성 송수신 | 구현 예정 |
+| Signaling·채팅 | WebSocket 연결 제어, 전체·회의방 채팅 | 구현 예정 |
+| 프로필 | 닉네임·캐릭터(프로필 아바타) 변경 | 구현 예정 |
+| 장치 설정 | 카메라·마이크 제어, 장치 선택, 마이크 테스트 | 구현 예정 |
+
+실제 WebRTC 송수신은 아직 구현·검증하지 않았다.
+인증·DB·녹화·화면 공유는 초기 필수 범위에서 제외한다.
+
+## Implementation
+
+단일 npm 패키지에서 클라이언트와 서버를 구분하고, 공통 TypeScript strict 설정을 적용한다.
+
+- `client/`: React와 Vite로 기본 화면을 표시한다.
+- `server/src/index.ts`: Node.js 기본 HTTP 모듈로 `GET /health`를 제공한다.
+- `server/src/sfu-check.ts`: worker 하나와 Router 하나를 생성하고 종료하는 독립 검증 진입점이다.
+
+SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패나 worker 사망 시에도 자원을 정리한다.
+
+### Documents
 
 - [Concept](./docs/Concept.md) — 프로젝트 개요 및 구현 방향
 - [PLAN](./docs/PLAN.md) — Step별 구현 범위와 완료 기준
 - [Step 01](./docs/Step01.md) — 실행 방법, 기술 선택 및 검증 결과
+- [Step 02](./docs/Step02.md) — mediasoup 선택과 worker·Router 실행 검증
 - [ChatHistory](./docs/ChatHistory.md) — 기존 대화 자동 기록 사용 방법
 
-## 로컬 실행 (Step 01)
+## What I Learned
+
+- Vite의 TypeScript 변환과 타입 검사를 구분하고, `tsc`로 클라이언트·서버를 별도 검사했다.
+- Windows x64 사전 빌드 worker를 실행해, Router가 worker 자식 프로세스 안에서 생성되는 구조를 확인했다.
+- 객체의 종료 상태와 자식 프로세스의 실제 종료를 각각 확인하고, 반복 실행·실패 상황에서 worker가 남지 않는지 검증했다.
+
+상세 검증 결과와 미검증 항목은 Step 문서에서 확인할 수 있다.
+
+## AI Usage
+
+Mode: ai
+
+Codex를 개발 계획, 코드 생성, 테스트 작성·실행 및 문서 정리에 활용한다.
+사용자는 Step별 범위와 제약을 정하고, 변경 내역과 타입 검사·빌드·로컬 실행 결과를 기준으로 검토·검증을 진행한다.
+개발 대화의 자동 기록 방식은 [ChatHistory 문서](./docs/ChatHistory.md)에 정리했다.
+
+## How to Run
+
+### 준비 및 의존성 설치
 
 Node.js 24.x와 npm 11 이상을 사용한다. 검증 환경은 Node.js 24.22.1, npm 12.2.1이다.
-저장소 루트에서 의존성을 설치한다. 최초 설치에도 커밋된 lockfile을 사용하는 `npm ci`를 사용할 수 있다.
+저장소의 실제 긴 경로에서 의존성을 설치한다. mediasoup worker 다운로드에는 GitHub Release 접근이 필요하다.
 
 ```powershell
 npm ci
 ```
 
-두 터미널에서 각각 실행한다.
+### 클라이언트·서버 실행
+
+저장소 루트의 두 터미널에서 각각 실행한다.
 
 ```powershell
 # 터미널 1: 클라이언트 http://127.0.0.1:5173
@@ -33,11 +111,16 @@ npm run dev:server
 각 터미널에서 `Ctrl+C`로 종료한다. 서버 상태 확인 응답은 `{"status":"ok"}`다.
 클라이언트는 서버 없이도 기본 화면이 열린다.
 
+### 타입 검사 및 빌드
+
 ```powershell
 npm run typecheck
 npm run build
+```
 
-# 빌드 후 별도 터미널에서 각각 실행
+빌드 결과는 별도 터미널에서 각각 실행한다.
+
+```powershell
 npm run preview:client
 npm run start:server
 ```
@@ -45,18 +128,19 @@ npm run start:server
 빌드 화면은 `http://127.0.0.1:4173`에서 확인한다.
 개별 검사·빌드 명령과 문제 해결 방법은 [Step 01 문서](./docs/Step01.md)를 참고한다.
 
-현재 구현 범위는 기본 화면과 HTTP 상태 확인 경로까지다. 아래 기능은 이후 Step의 구현 대상이다.
+### SFU 실행 검증
 
-아래 기능을 구현할 거고 프롬프트로 작업순서 정의 밑 기능구현을 step별로 작성하여 구현하도록 할 계획이다.
+worker·Router를 생성하고 종료 상태를 확인한다.
 
+```powershell
+npm run sfu:check  # 생성 후 자동 종료
+npm run sfu:run    # 생성 상태 유지, Ctrl+C로 종료
+npm run test:sfu   # 실제 worker 기반 테스트
 ```
-1. 다자간 화상회의
-2. 채팅
-	- 전체 채팅
-	- 회의방 채팅
-3. 캐릭터, 닉네임 변경
-4. 장치설정
-	- 카메라, 마이크 제어
-	- 장치 선택
-	- 마이크 테스트
-```
+
+설치 조건과 검증 범위는 [Step 02 문서](./docs/Step02.md)를 참고한다.
+
+## References
+
+- [Repository README Convention](https://github.com/Sangseon/00-conventions/blob/master/docs/repository-readme.md) — Learning Repository README 작성 기준
+- [mediasoup v3 공식 문서](https://mediasoup.org/documentation/v3/) — SFU 설계·설치·API

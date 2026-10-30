@@ -17,9 +17,13 @@
     "build:client": "npm run typecheck:client && vite build --config client/vite.config.ts",
     "build:server": "tsc --project server/tsconfig.json",
     "preview:client": "vite preview --config client/vite.config.ts",
-    "start:server": "node server/dist/index.js"
+    "start:server": "node server/dist/index.js",
+    "sfu:run": "tsx server/src/sfu-check.ts",
+    "sfu:check": "tsx server/src/sfu-check.ts --once",
+    "test:sfu": "npm run build:server && node --test scripts/sfu.test.cjs"
   },
   "dependencies": {
+    "mediasoup": "3.32.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
@@ -31,5 +35,8 @@
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.5"
+  },
+  "allowScripts": {
+    "mediasoup@3.32.0": true
   }
 }
