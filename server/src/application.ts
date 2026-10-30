@@ -24,7 +24,7 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
 
   function send(socket: WebSocket, message: ServerMessage) {
     if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message), error => { if (error) socket.terminate(); });
+      socket.send(JSON.stringify(message));
     }
   }
   function broadcast(message: ServerMessage, except?: WebSocket) {
@@ -57,7 +57,10 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
   wss.on('connection', socket => {
     const participant: Participant = { participantId: randomUUID(), nickname: '참가자', avatarId: 'bear' };
     sessions.set(socket, { participant, alive: true });
-    socket.on('error', () => { remove(socket); socket.terminate(); });
+    socket.on('error', error => {
+      const code = (error as Error & { code?: string }).code;
+      if (code !== 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' && socket.readyState === WebSocket.OPEN) socket.terminate();
+    });
     socket.on('close', () => remove(socket));
     socket.on('pong', () => { const session = sessions.get(socket); if (session) session.alive = true; });
     send(socket, { kind: 'event', type: 'session.ready', selfId: participant.participantId, participants: [...sessions.values()].map(session => session.participant) });

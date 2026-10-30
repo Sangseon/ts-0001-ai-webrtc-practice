@@ -177,3 +177,25 @@ npm run sfu:check
 participantId와 연결의 소유권을 계속 서버가 결정해야 한다. 변경된 정책에 따라 사용자와 회의방의 다대다(M:N) 소속을 서버 메모리에 추가하고, 방 목록·소속 변경 이벤트를 현재 요청·응답·이벤트 구분에 확장한다. 특정 방 퇴장은 다른 방 소속과 세션을 유지하며, 연결 종료의 중복 안전한 정리 흐름에는 참여 중인 모든 방에서의 이탈을 연결해야 한다. 지금은 회의방 타입·빈 방 정책·방 API를 선행 구현하지 않았다.
 
 2026-10-30 정책 변경 후 회귀 검증에서 초과 payload의 클라이언트 종료 코드가 1009 대신 1006이 되는 기존 경합을 한 차례 관찰했다. 이후 세 차례는 7/7 통과했으나 이슈를 해결한 것은 아니다. 위 표는 Step 03 당시의 검증 기록이며, 후속 결과와 원인 분석은 [MultiRoomPolicyImpact.md](./MultiRoomPolicyImpact.md)를 따른다. 이번 문서 작업에서는 소스·테스트를 수정하지 않았다.
+
+## 2026-10-30 초과 payload 종료 경합 수정
+
+위 후속 회귀에서 남긴 결함을 별도 버그 수정 작업으로 처리했다. 설치된 `ws`는 8.22.0이며 서버의 `maxPayload: 4096` 설정은 유지한다. `ws` Receiver는 누적 payload가 제한을 넘으면 `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH`와 상태 코드 1009를 만들고 내부 `close(1009)`를 먼저 호출한 다음 WebSocket `error` 이벤트를 발생시킨다. 이 순서는 [ws 8.22.0 Receiver 구현](https://github.com/websockets/ws/blob/8.22.0/lib/receiver.js)과 [WebSocket 구현](https://github.com/websockets/ws/blob/8.22.0/lib/websocket.js), heartbeat의 강제 종료 용도는 [ws 공식 README](https://github.com/websockets/ws/blob/8.22.0/README.md#how-to-detect-and-close-broken-connections)에서 대조했다.
+
+기존 애플리케이션은 이 `error` 리스너에서 세션을 제거하고 즉시 `terminate()`했다. 공통 송신 콜백도 전송 오류에 `terminate()`했다. 두 경로 모두 ws가 시작한 Close 프레임 전송과 겹칠 수 있어 클라이언트가 프레임을 받기 전에 TCP 연결을 파괴할 수 있었다.
+
+수정 후 흐름은 다음과 같다.
+
+1. 초과 payload는 ws가 `close(1009)`를 수행하도록 두고 애플리케이션은 해당 오류에서 terminate하지 않는다.
+2. WebSocket `error`에서는 payload 오류가 아닌데 소켓이 아직 OPEN인 경우에만 강제 종료한다.
+3. 세션·프로필·모든 회의방 소속 정리는 `close` 이벤트 한 곳에서 실행한다. 기존 `remove()`의 중복 안전성은 유지한다.
+4. heartbeat의 pong 미응답과 애플리케이션 전체 shutdown은 복구 불가능한 연결을 즉시 닫는 경로이므로 기존 terminate 동작을 유지한다.
+5. 공통 `send()`의 비동기 콜백은 더 이상 별도로 terminate하지 않는다. 전송 실패는 WebSocket 자체 error·close 흐름에서 처리한다.
+
+테스트는 4,096-byte 텍스트가 INVALID_JSON 응답 후 연결을 유지하고, 4,097-byte 텍스트는 1009 Close 프레임을 수신하는지 확인한다. 정식 통합 테스트는 완전한 초기 상태를 받은 연결 10개를 한 서버에서 연속 종료해 10/10이 1009인지 검사한다. 오류 연결의 `participant.left`가 한 번만 발생하고 서버·다른 연결이 유지되는 것도 확인한다.
+
+최종 회귀에서는 TypeScript strict 검사, Client·Server 빌드, `/health` 200과 `{"status":"ok"}`, SFU 5/5 및 별도 `sfu:check` worker·Router 생성·종료, ChatHistory 기록기 26/26도 모두 통과했다.
+
+진단 중 초기 상태 수신이 끝나기 전 연결을 극단적으로 빠르게 반복한 별도 stress에서는 애플리케이션 terminate를 제거한 뒤에도 300회 중 2~3회 클라이언트 1006이 관찰됐다. 그때 서버의 ws 내부 상태는 Close 프레임 쓰기 완료(`_closeFrameSent: true`)와 peer Close 미수신을 나타냈다. 초기 상태를 받은 100회 stress도 한 번은 100/100이었지만 다음 실행은 48회째 1006이 발생했다. 이는 애플리케이션의 불필요한 terminate 경합과 구분되는 전송 계층 종료이며, 실제 네트워크 단절·강제 종료·shutdown에서도 1006은 가능하다. 내부 필드는 원인 분리용 일시 진단에만 사용했고 제품 코드나 정식 테스트에는 의존하지 않는다.
+
+따라서 이 문서에서 기록한 **애플리케이션이 초과 payload 처리 중 Close 핸드셰이크를 방해하던 결함은 해결**로 변경한다. 모든 환경·네트워크에서 1009를 절대 보장한다는 뜻은 아니며, Windows 루프백 외 환경과 장시간·고부하 전송은 미검증이다.

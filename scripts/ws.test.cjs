@@ -123,15 +123,52 @@ test('abrupt disconnect and absent pong remove sessions', { timeout: 10000 }, as
   assert.ok(!c.initial.participants.some(p => p.participantId === silent.initial.selfId));
 });
 
-test('oversized payload closes only the offending socket and removes its session', { timeout: 10000 }, async t => {
+test('payload limit keeps 4096-byte connections open and closes oversized room members with 1009', { timeout: 15000 }, async t => {
   const app = await setup(t);
   const a = await connect(app.url);
   const b = await connect(app.url);
+  const room = (await roomRequest(a, 'room.create', { name: 'payload-limit' })).room;
+  await roomRequest(b, 'room.join', { roomId: room.roomId });
+  await a.next(m => m.type === 'room.state' && m.roomId === room.roomId && m.participants.length === 2);
+
+  b.socket.send('x'.repeat(4096));
+  assert.equal((await b.next(m => m.kind === 'response')).code, 'INVALID_JSON');
+  assert.equal(b.socket.readyState, WebSocket.OPEN);
+
   const closed = once(b.socket, 'close');
   b.socket.send('x'.repeat(4097));
   const [code] = await closed;
   assert.equal(code, 1009);
-  await a.next(m => m.type === 'participant.left');
+  assert.equal((await a.next(m => m.type === 'participant.left')).participantId, b.initial.selfId);
+  await delay(20);
+  assert.equal(a.queue.filter(m => m.type === 'participant.left' && m.participantId === b.initial.selfId).length, 0);
+  const roomState = await a.next(m => m.type === 'room.state' && m.roomId === room.roomId && m.participants.length === 1);
+  assert.deepEqual(roomState.participants.map(participant => participant.participantId), [a.initial.selfId]);
+  const summary = await roomList(a, rooms => rooms.some(value => value.roomId === room.roomId && value.participantCount === 1));
+  assert.equal(summary.find(value => value.roomId === room.roomId).participantCount, 1);
+
+  const c = await connect(app.url);
+  c.socket.send(JSON.stringify(update('after-oversize', '정상 연결', 'cat')));
+  assert.equal((await c.next(m => m.kind === 'response' && m.requestId === 'after-oversize')).ok, true);
+  assert.equal((await fetch(app.http + '/health')).status, 200);
+});
+
+test('oversized payload repeatedly completes the 1009 close handshake without stopping the server', { timeout: 20000 }, async t => {
+  const app = await setup(t);
+  const observer = await connect(app.url);
+  for (let iteration = 0; iteration < 10; iteration++) {
+    const offender = await connect(app.url);
+    await offender.next(message => message.type === 'rooms.changed');
+    const closed = once(offender.socket, 'close');
+    offender.socket.send('x'.repeat(4097));
+    const [code] = await closed;
+    assert.equal(code, 1009, `iteration ${iteration + 1}`);
+    assert.equal(
+      (await observer.next(message => message.type === 'participant.left' && message.participantId === offender.initial.selfId)).participantId,
+      offender.initial.selfId,
+    );
+  }
+  assert.equal(observer.socket.readyState, WebSocket.OPEN);
   assert.equal((await fetch(app.http + '/health')).status, 200);
 });
 
@@ -141,6 +178,18 @@ test('shutdown closes active sockets and HTTP listener', { timeout: 10000 }, asy
   const closed = once(a.socket, 'close');
   await app.close();
   await closed;
+  assert.equal(app.server.listening, false);
+  await app.close();
+});
+
+test('shutdown racing an oversized payload finishes without leaving the HTTP listener open', { timeout: 10000 }, async t => {
+  const app = await setup(t);
+  const a = await connect(app.url);
+  const closed = once(a.socket, 'close');
+  a.socket.send('x'.repeat(4097));
+  await app.close();
+  const [code] = await closed;
+  assert.ok(code === 1006 || code === 1009);
   assert.equal(app.server.listening, false);
   await app.close();
 });
