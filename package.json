@@ -21,7 +21,9 @@
     "sfu:run": "tsx server/src/sfu-check.ts",
     "sfu:check": "tsx server/src/sfu-check.ts --once",
     "test:sfu": "npm run build:server && node --test scripts/sfu.test.cjs",
-    "test:ws": "npm run build:server && node --test scripts/ws.test.cjs"
+    "test:ws": "npm run build:server && node --test scripts/ws.test.cjs",
+    "test:media": "node --import tsx --test scripts/media.test.cjs",
+    "test:media:browser": "node scripts/media.browser.cjs"
   },
   "dependencies": {
     "mediasoup": "3.32.0",

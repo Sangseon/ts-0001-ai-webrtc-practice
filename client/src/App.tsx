@@ -4,6 +4,7 @@ import type { AvatarId, Participant, Profile } from '../../server/src/shared/pro
 import { useSession } from './useSession';
 import { Rooms } from './Rooms';
 import { Chat } from './Chat';
+import { LocalMedia } from './LocalMedia';
 
 function ProfileForm({ self, saving, onSave }: { self: Participant; saving: boolean; onSave: (profile: Profile) => void }) {
   const [nickname, setNickname] = useState(self.nickname);
@@ -34,7 +35,7 @@ export function App() {
   const statusText = { connecting: '연결 중', connected: '연결됨', disconnected: '연결 종료' }[session.status];
   return (
     <main>
-      <p>Step 05 · 전체 채팅과 회의방 채팅</p>
+      <p>Step 06 · 로컬 카메라·마이크 미리보기</p>
       <h1>WebRTC Practice</h1>
       <p>연결 상태: <strong data-testid="connection-status">{statusText}</strong></p>
       <p>내 participantId: <code data-testid="self-id">{session.selfId ?? '없음'}</code></p>
@@ -43,6 +44,7 @@ export function App() {
         : <button onClick={session.disconnect} disabled={session.status === 'connecting'}>연결 종료</button>}
       {session.error && <p role="alert">{session.error}</p>}
       {session.notice && <p role="status">{session.notice}</p>}
+      <LocalMedia />
       {self && <ProfileForm key={self.participantId} self={self} saving={session.saving} onSave={session.updateProfile} />}
       <Rooms session={session} />
       <Chat session={session} />
