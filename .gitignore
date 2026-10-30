@@ -1,0 +1,2 @@
+# Only recorder state is local. ChatHistory Markdown is version controlled.
+/.chat-history/

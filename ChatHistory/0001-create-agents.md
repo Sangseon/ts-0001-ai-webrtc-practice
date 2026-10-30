@@ -44,7 +44,7 @@
 해당 요청에 대한 최종 답변 원문이다. 아래 답변은 첫 번째 작업 완료 당시의 결과를 설명한다. 중간 진행 메시지와 도구 실행 내역은 기록 범위에 포함하지 않는다.
 
 ```markdown
-루트에 [AGENTS.md](/D:/01.Portfolio/TypeScript/ts-0001-ai-webrtc-practice/AGENTS.md)를 생성했습니다.
+루트에 [AGENTS.md](../AGENTS.md)를 생성했습니다.
 
 - `docs/Concept.md`를 요구사항 기준으로 지정하고 SFU 구현 방향과 선택 이유를 명시했습니다.
 - 추후 `docs/PLAN.md`에 따라 요청한 Step만 구현하며, 임의로 다음 Step이나 기능을 추가하지 않도록 했습니다.

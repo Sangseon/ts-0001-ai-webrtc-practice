@@ -1,0 +1,27 @@
+{
+  "description": "Save prompt and Stop message locally; never block development.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try { const cp = require('node:child_process'); const root = cp.execFileSync('git', ['rev-parse', '--show-toplevel'], {encoding:'utf8', stdio:['ignore','pipe','pipe']}).trim(); const result = cp.spawnSync(process.execPath, [require('node:path').join(root, 'scripts', 'chat-history.cjs')], {stdio:'inherit'}); if (result.error || result.status !== 0) throw new Error(); } catch { process.stdout.write(JSON.stringify({systemMessage:'ChatHistory: git-root-launch-failed; recording skipped.'}) + '\\n'); }\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"try { const cp = require('node:child_process'); const root = cp.execFileSync('git', ['rev-parse', '--show-toplevel'], {encoding:'utf8', stdio:['ignore','pipe','pipe']}).trim(); const result = cp.spawnSync(process.execPath, [require('node:path').join(root, 'scripts', 'chat-history.cjs')], {stdio:'inherit'}); if (result.error || result.status !== 0) throw new Error(); } catch { process.stdout.write(JSON.stringify({systemMessage:'ChatHistory: git-root-launch-failed; recording skipped.'}) + '\\n'); }\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
