@@ -16,10 +16,15 @@ export type RoomState = { roomId: string; name: string; participants: Participan
 export type RoomRequest =
   | { kind: 'request'; type: 'room.create'; requestId: string; name: string }
   | { kind: 'request'; type: 'room.join' | 'room.leave'; requestId: string; roomId: string };
-export type ClientRequest = ProfileRequest | RoomRequest;
+export type ChatTarget = { scope: 'global' } | { scope: 'room'; roomId: string };
+export type ChatRequest = { kind: 'request'; type: 'chat.send'; requestId: string; body: string } & ChatTarget;
+export type ChatMessage = { messageId: string; participantId: string; body: string; sentAt: string } & ChatTarget;
+export type ClientRequest = ProfileRequest | RoomRequest | ChatRequest;
 export type ErrorCode = 'INVALID_JSON' | 'INVALID_MESSAGE' | 'UNKNOWN_TYPE' | 'INVALID_PROFILE'
-  | 'INVALID_ROOM_NAME' | 'ROOM_NOT_FOUND' | 'ALREADY_JOINED' | 'NOT_JOINED';
+  | 'INVALID_ROOM_NAME' | 'ROOM_NOT_FOUND' | 'ALREADY_JOINED' | 'NOT_JOINED' | 'INVALID_CHAT';
 export type ServerMessage =
+  | ({ kind: 'response'; type: 'chat.send'; requestId: string; ok: true; messageId: string } & ChatTarget)
+  | { kind: 'event'; type: 'chat.message'; message: ChatMessage }
   | { kind: 'event'; type: 'session.ready'; selfId: string; participants: Participant[] }
   | { kind: 'event'; type: 'participant.joined' | 'participant.updated'; participant: Participant }
   | { kind: 'event'; type: 'participant.left'; participantId: string }
@@ -32,7 +37,10 @@ export type ServerMessage =
 
 export const nicknameMaxLength = 20;
 export const roomNameMaxLength = 40;
-const errorCodes: ErrorCode[] = ['INVALID_JSON', 'INVALID_MESSAGE', 'UNKNOWN_TYPE', 'INVALID_PROFILE', 'INVALID_ROOM_NAME', 'ROOM_NOT_FOUND', 'ALREADY_JOINED', 'NOT_JOINED'];
+export const chatMaxLength = 500;
+export const chatChannelLimit = 100;
+export const chatTotalLimit = 500;
+const errorCodes: ErrorCode[] = ['INVALID_JSON', 'INVALID_MESSAGE', 'UNKNOWN_TYPE', 'INVALID_PROFILE', 'INVALID_ROOM_NAME', 'ROOM_NOT_FOUND', 'ALREADY_JOINED', 'NOT_JOINED', 'INVALID_CHAT'];
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, allowed: string[]) =>
@@ -62,6 +70,13 @@ export function parseRequest(text: string): ClientRequest | Extract<ServerMessag
   if (!record(value)) return fail('INVALID_MESSAGE', '요청 객체가 필요합니다.');
   const requestId = validId(value.requestId) ? value.requestId : null;
   if (value.kind !== 'request' || !requestId || typeof value.type !== 'string') return fail('INVALID_MESSAGE', '요청 종류와 requestId를 확인해주세요.', requestId);
+  if (value.type === 'chat.send') {
+    const fields = value.scope === 'global' ? ['kind', 'type', 'requestId', 'scope', 'body'] : ['kind', 'type', 'requestId', 'scope', 'roomId', 'body'];
+    if (!keys(value, fields) || (value.scope !== 'global' && value.scope !== 'room') || (value.scope === 'room' && !validId(value.roomId))) return fail('INVALID_MESSAGE', '채팅 범위와 대상 방, 요청 필드를 확인해주세요.', requestId);
+    if (typeof value.body !== 'string' || !value.body.trim() || Array.from(value.body.trim()).length > chatMaxLength || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value.body)) return fail('INVALID_CHAT', '메시지는 앞뒤 공백을 제거한 1~500자이며 제어 문자를 사용할 수 없습니다.', requestId);
+    const target: ChatTarget = value.scope === 'global' ? { scope: 'global' } : { scope: 'room', roomId: value.roomId as string };
+    return { kind: 'request', type: 'chat.send', requestId, body: value.body.trim(), ...target };
+  }
   if (value.type === 'room.create') {
     if (!keys(value, ['kind', 'type', 'requestId', 'name'])) return fail('INVALID_MESSAGE', '회의방 생성 필드를 확인해주세요.', requestId);
     const name = validateRoomName(value.name);
@@ -94,6 +109,12 @@ export function isServerMessage(value: unknown): value is ServerMessage {
   if (value.kind === 'event') {
     switch (value.type) {
       case 'session.ready': return validId(value.selfId) && Array.isArray(value.participants) && value.participants.every(isParticipant);
+      case 'chat.message': {
+        const m = value.message;
+        return record(m) && validId(m.messageId) && validId(m.participantId) && typeof m.body === 'string' && m.body.trim().length > 0 && Array.from(m.body).length <= chatMaxLength
+          && typeof m.sentAt === 'string' && Number.isFinite(Date.parse(m.sentAt))
+          && ((m.scope === 'global' && keys(m, ['messageId', 'participantId', 'body', 'sentAt', 'scope'])) || (m.scope === 'room' && validId(m.roomId) && keys(m, ['messageId', 'participantId', 'body', 'sentAt', 'scope', 'roomId'])));
+      }
       case 'participant.joined':
       case 'participant.updated': return isParticipant(value.participant);
       case 'participant.left': return validId(value.participantId);
@@ -103,6 +124,9 @@ export function isServerMessage(value: unknown): value is ServerMessage {
     }
   }
   if (value.kind !== 'response') return false;
+  if (value.type === 'chat.send') return value.ok === true && validId(value.requestId) && validId(value.messageId)
+    && ((value.scope === 'global' && keys(value, ['kind', 'type', 'requestId', 'ok', 'messageId', 'scope']))
+      || (value.scope === 'room' && validId(value.roomId) && keys(value, ['kind', 'type', 'requestId', 'ok', 'messageId', 'scope', 'roomId'])));
   if (value.type === 'profile.update') return value.ok === true && validId(value.requestId) && isParticipant(value.participant);
   if (value.type === 'room.create' || value.type === 'room.join') return value.ok === true && validId(value.requestId) && isRoomState(value.room);
   if (value.type === 'room.leave') return value.ok === true && validId(value.requestId) && validId(value.roomId);

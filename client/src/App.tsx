@@ -3,6 +3,7 @@ import { avatars, nicknameMaxLength } from '../../server/src/shared/protocol.js'
 import type { AvatarId, Participant, Profile } from '../../server/src/shared/protocol.js';
 import { useSession } from './useSession';
 import { Rooms } from './Rooms';
+import { Chat } from './Chat';
 
 function ProfileForm({ self, saving, onSave }: { self: Participant; saving: boolean; onSave: (profile: Profile) => void }) {
   const [nickname, setNickname] = useState(self.nickname);
@@ -33,7 +34,7 @@ export function App() {
   const statusText = { connecting: '연결 중', connected: '연결됨', disconnected: '연결 종료' }[session.status];
   return (
     <main>
-      <p>Step 04 · 다중 회의방과 참가자 목록</p>
+      <p>Step 05 · 전체 채팅과 회의방 채팅</p>
       <h1>WebRTC Practice</h1>
       <p>연결 상태: <strong data-testid="connection-status">{statusText}</strong></p>
       <p>내 participantId: <code data-testid="self-id">{session.selfId ?? '없음'}</code></p>
@@ -44,6 +45,7 @@ export function App() {
       {session.notice && <p role="status">{session.notice}</p>}
       {self && <ProfileForm key={self.participantId} self={self} saving={session.saving} onSave={session.updateProfile} />}
       <Rooms session={session} />
+      <Chat session={session} />
       <section aria-label="접속 사용자">
         <h2>접속 사용자 ({session.participants.length}명)</h2>
         <ul data-testid="participants">

@@ -47,3 +47,5 @@ li code { display: block; }
 code { overflow-wrap: anywhere; }
 [role="alert"] { color: #b91c1c; }
 [role="status"] { color: #166534; }
+textarea { display: block; width: 100%; box-sizing: border-box; min-height: 5rem; font: inherit; }
+.chat-body { white-space: pre-wrap; overflow-wrap: anywhere; }

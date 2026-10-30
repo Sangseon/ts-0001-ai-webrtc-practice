@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { isServerMessage } from '../../server/src/shared/protocol.js';
-import type { Participant, Profile, ClientRequest, RoomSummary } from '../../server/src/shared/protocol.js';
+import { chatChannelLimit, chatTotalLimit, isServerMessage } from '../../server/src/shared/protocol.js';
+import type { ChatMessage, ChatTarget, Participant, Profile, ClientRequest, RoomSummary } from '../../server/src/shared/protocol.js';
 
-type Command = { type: 'profile.update'; profile: Profile } | { type: 'room.create'; name: string } | { type: 'room.join' | 'room.leave'; roomId: string };
+type Command = { type: 'profile.update'; profile: Profile } | { type: 'room.create'; name: string } | { type: 'room.join' | 'room.leave'; roomId: string } | ({ type: 'chat.send'; body: string } & ChatTarget);
 
 export function useSession() {
   const [attempt, setAttempt] = useState(0);
@@ -12,11 +12,18 @@ export function useSession() {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [joinedRooms, setJoinedRooms] = useState<Record<string, Participant[]>>({});
   const [selectedRoomId, setSelectedRoomId] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [profiles, setProfiles] = useState<Record<string, Participant>>({});
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const pending = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+
+  useEffect(() => {
+    const retained = new Set([...participants.map(p => p.participantId), ...messages.map(m => m.participantId)]);
+    setProfiles(current => Object.fromEntries(Object.entries({ ...current, ...Object.fromEntries(participants.map(p => [p.participantId, p])) }).filter(([id]) => retained.has(id))));
+  }, [participants, messages]);
 
   function clearPending() {
     if (pending.current) clearTimeout(pending.current.timer);
@@ -33,6 +40,8 @@ export function useSession() {
     setRooms([]);
     setJoinedRooms({});
     setSelectedRoomId('');
+    setMessages([]);
+    setProfiles({});
     setError('');
     setNotice('');
     // StrictMode's first setup is cleaned up before starting a network connection.
@@ -51,16 +60,28 @@ export function useSession() {
           if (value.type === 'session.ready') {
             setSelfId(value.selfId);
             setParticipants(value.participants);
+            setProfiles(Object.fromEntries(value.participants.map(p => [p.participantId, p])));
             setStatus('connected');
+          } else if (value.type === 'chat.message') {
+            const message = value.message;
+            const channel = (m: ChatMessage) => m.scope === 'global' ? 'global' : m.roomId;
+            setMessages(current => {
+              if (current.some(m => m.messageId === message.messageId)) return current;
+              const same = current.filter(m => channel(m) === channel(message));
+              const dropped = new Set(same.slice(0, Math.max(0, same.length - chatChannelLimit + 1)).map(m => m.messageId));
+              return [...current.filter(m => !dropped.has(m.messageId)), message].slice(-chatTotalLimit);
+            });
           } else if (value.type === 'participant.left') {
             setParticipants(current => current.filter(participant => participant.participantId !== value.participantId));
           } else if (value.type === 'participant.joined' || value.type === 'participant.updated') {
+            setProfiles(current => ({ ...current, [value.participant.participantId]: value.participant }));
             setParticipants(current => [...current.filter(participant => participant.participantId !== value.participant.participantId), value.participant]);
           } else if (value.type === 'rooms.changed') {
             setRooms(value.rooms);
             const ids = new Set(value.rooms.map(room => room.roomId));
             setJoinedRooms(current => Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id))));
             setSelectedRoomId(current => ids.has(current) ? current : '');
+            setMessages(current => current.filter(m => m.scope === 'global' || ids.has(m.roomId)));
           } else if (value.type === 'room.state') {
             setJoinedRooms(current => Object.hasOwn(current, value.roomId) ? { ...current, [value.roomId]: value.participants } : current);
           }
@@ -71,9 +92,11 @@ export function useSession() {
           clearPending();
           setError('');
           if (value.type === 'profile.update') setNotice('프로필을 변경했습니다.');
+          else if (value.type === 'chat.send') setNotice('서버가 채팅 전송을 승인했습니다.');
           else if (value.type === 'room.leave') {
             setJoinedRooms(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== value.roomId)));
             setNotice('선택한 회의방에서 퇴장했습니다.');
+            setMessages(current => current.filter(m => m.scope === 'global' || m.roomId !== value.roomId));
           } else {
             setJoinedRooms(current => ({ ...current, [value.room.roomId]: value.room.participants }));
             setSelectedRoomId(value.room.roomId);
@@ -93,6 +116,8 @@ export function useSession() {
         setRooms([]);
         setJoinedRooms({});
         setSelectedRoomId('');
+        setMessages([]);
+        setProfiles({});
         setNotice('');
       };
     }, 0);
@@ -131,7 +156,8 @@ export function useSession() {
   }
 
   return {
-    status, selfId, participants, rooms, joinedRooms, selectedRoomId, setSelectedRoomId, error, notice, saving,
+    status, selfId, participants, rooms, joinedRooms, selectedRoomId, setSelectedRoomId, error, notice, saving, messages, profiles,
+    sendChat: (target: ChatTarget, body: string) => sendRequest({ type: 'chat.send', ...target, body }),
     updateProfile: (profile: Profile) => sendRequest({ type: 'profile.update', profile }),
     createRoom: (name: string) => sendRequest({ type: 'room.create', name }),
     joinRoom: (roomId: string) => sendRequest({ type: 'room.join', roomId }),

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { parseRequest } from './shared/protocol.js';
-import type { Participant, ServerMessage } from './shared/protocol.js';
+import type { ChatMessage, Participant, ServerMessage } from './shared/protocol.js';
 import { createRoomStore } from './rooms.js';
 
 export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
@@ -24,7 +24,9 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
 
   function send(socket: WebSocket, message: ServerMessage) {
     if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
+      try { socket.send(JSON.stringify(message)); } catch {
+        if (socket.readyState === WebSocket.OPEN) socket.terminate();
+      }
     }
   }
   function broadcast(message: ServerMessage, except?: WebSocket) {
@@ -69,13 +71,32 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
 
     socket.on('message', (data, isBinary) => {
       const session = sessions.get(socket);
-      if (!session || closing) return;
+      if (!session || closing || socket.readyState !== WebSocket.OPEN) return;
       if (isBinary) {
         send(socket, { kind: 'response', type: 'error', requestId: null, ok: false, code: 'INVALID_MESSAGE', message: '텍스트 JSON 요청만 지원합니다.' });
         return;
       }
       const request = parseRequest(data.toString());
       if (request.type === 'error') { send(socket, request); return; }
+      if (request.type === 'chat.send') {
+        const room = request.scope === 'room' ? rooms.get(request.roomId) : undefined;
+        if (request.scope === 'room' && (!room || !room.participantIds.has(session.participant.participantId))) {
+          send(socket, { kind: 'response', type: 'error', requestId: request.requestId, ok: false,
+            code: room ? 'NOT_JOINED' : 'ROOM_NOT_FOUND', message: room ? '참여 중인 회의방에만 전송할 수 있습니다.' : '회의방이 존재하지 않습니다.' });
+          return;
+        }
+        const message: ChatMessage = { messageId: randomUUID(), participantId: session.participant.participantId,
+          sentAt: new Date().toISOString(), body: request.body,
+          ...(request.scope === 'global' ? { scope: 'global' } : { scope: 'room', roomId: request.roomId }) };
+        send(socket, { kind: 'response', type: 'chat.send', requestId: request.requestId, ok: true, messageId: message.messageId,
+          ...(request.scope === 'global' ? { scope: 'global' } : { scope: 'room', roomId: request.roomId }) });
+        for (const [recipient, recipientSession] of sessions) {
+          if (request.scope === 'global' || room?.participantIds.has(recipientSession.participant.participantId)) {
+            send(recipient, { kind: 'event', type: 'chat.message', message });
+          }
+        }
+        return;
+      }
       if (request.type !== 'profile.update') {
         let roomId: string;
         if (request.type === 'room.create') {

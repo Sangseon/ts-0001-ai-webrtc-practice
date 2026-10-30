@@ -208,6 +208,91 @@ test('occupied HTTP port reports startup error without an unhandled ws error', {
 });
 
 let requestSequence = 0;
+const chatRequest = (client, scope, body, roomId) => roomRequest(client, 'chat.send', scope === 'global' ? { scope, body } : { scope, body, roomId });
+
+test('chat: global once per connection, independent M:N room routing and no replay', { timeout: 15000 }, async t => {
+  const app = await setup(t);
+  const a = await connect(app.url), b = await connect(app.url), c = await connect(app.url), lobby = await connect(app.url);
+  const r1 = (await roomRequest(a, 'room.create', { name: 'one' })).room.roomId;
+  const r2 = (await roomRequest(a, 'room.create', { name: 'two' })).room.roomId;
+  await roomRequest(b, 'room.join', { roomId: r1 });
+  await roomRequest(c, 'room.join', { roomId: r2 });
+  const start = Date.now();
+  const response = await chatRequest(a, 'global', '  hello  ');
+  for (const client of [a, b, c, lobby]) {
+    const event = await client.next(m => m.type === 'chat.message');
+    assert.equal(event.message.messageId, response.messageId);
+    assert.equal(event.message.participantId, a.initial.selfId);
+    assert.equal(event.message.body, 'hello');
+    assert.ok(Date.parse(event.message.sentAt) >= start);
+  }
+  const first = await chatRequest(a, 'room', 'one', r1);
+  const second = await chatRequest(a, 'room', 'two', r2);
+  assert.equal(response.scope, 'global');
+  assert.equal(first.scope, 'room');
+  assert.equal(first.roomId, r1);
+  assert.equal(second.roomId, r2);
+  await b.next(m => m.type === 'chat.message' && m.message.messageId === first.messageId);
+  await c.next(m => m.type === 'chat.message' && m.message.messageId === second.messageId);
+  await a.next(m => m.type === 'chat.message' && m.message.messageId === first.messageId);
+  await a.next(m => m.type === 'chat.message' && m.message.messageId === second.messageId);
+  await chatRequest(b, 'room', 'from-b', r1);
+  await chatRequest(c, 'room', 'from-c', r2);
+  await a.next(m => m.type === 'chat.message' && m.message.body === 'from-b');
+  await a.next(m => m.type === 'chat.message' && m.message.body === 'from-c');
+  for (const client of [a, b, c, lobby]) assert.equal(client.queue.filter(m => m.type === 'chat.message' && m.message.messageId === response.messageId).length, 0);
+  assert.ok(!b.queue.some(m => m.type === 'chat.message' && m.message.roomId === r2));
+  assert.ok(!c.queue.some(m => m.type === 'chat.message' && m.message.roomId === r1));
+  assert.ok(!lobby.queue.some(m => m.type === 'chat.message'));
+  const fresh = await connect(app.url);
+  await roomRequest(fresh, 'room.join', { roomId: r1 });
+  assert.ok(!fresh.queue.some(m => m.type === 'chat.message'));
+});
+
+test('chat validation rejects forged metadata and invalid input without events; text stays literal', { timeout: 15000 }, async t => {
+  const app = await setup(t);
+  const a = await connect(app.url), b = await connect(app.url);
+  const roomId = (await roomRequest(a, 'room.create', { name: 'validation' })).room.roomId;
+  for (const payload of [
+    { scope: 'global', body: '' }, { scope: 'global', body: '   ' }, { scope: 'global', body: 'x'.repeat(501) },
+    { scope: 'global', body: 1 }, { scope: 'other', body: 'bad' }, { scope: 'room', body: 'bad' },
+    { scope: 'global', body: 'bad', participantId: a.initial.selfId },
+    { scope: 'global', body: 'bad', sentAt: new Date().toISOString() },
+    { scope: 'global', body: 'bad', roomId }, { scope: 'global' },
+    { scope: 'room', roomId: 'missing', body: 'bad' }, { scope: 'room', roomId, body: 'bad' },
+  ]) assert.equal((await roomRequest(b, 'chat.send', payload)).ok, false);
+  assert.ok(!a.queue.some(m => m.type === 'chat.message'));
+  const text = '<script>window.chatInjected=true</script><img src=x onerror=alert(1)>';
+  assert.equal((await chatRequest(b, 'global', text)).ok, true);
+  assert.equal((await a.next(m => m.type === 'chat.message')).message.body, text);
+  assert.equal((await chatRequest(b, 'global', '😀'.repeat(500))).ok, true);
+});
+
+test('chat and leave use server order; leaving one room preserves the other and disconnect cleans all', { timeout: 15000 }, async t => {
+  const app = await setup(t);
+  const a = await connect(app.url), b = await connect(app.url);
+  const r1 = (await roomRequest(a, 'room.create', { name: 'one' })).room.roomId;
+  const r2 = (await roomRequest(a, 'room.create', { name: 'two' })).room.roomId;
+  await roomRequest(b, 'room.join', { roomId: r1 });
+  await roomRequest(b, 'room.join', { roomId: r2 });
+  a.socket.send(JSON.stringify({ kind: 'request', type: 'chat.send', requestId: 'before', scope: 'room', roomId: r1, body: 'before' }));
+  a.socket.send(JSON.stringify({ kind: 'request', type: 'room.leave', requestId: 'leave-chat', roomId: r1 }));
+  a.socket.send(JSON.stringify({ kind: 'request', type: 'chat.send', requestId: 'after', scope: 'room', roomId: r1, body: 'after' }));
+  assert.equal((await a.next(m => m.requestId === 'before')).ok, true);
+  assert.equal((await a.next(m => m.requestId === 'leave-chat')).ok, true);
+  assert.equal((await a.next(m => m.requestId === 'after')).code, 'NOT_JOINED');
+  await a.next(m => m.type === 'chat.message' && m.message.body === 'before');
+  await chatRequest(b, 'room', 'not-for-a', r1);
+  await chatRequest(b, 'room', 'still-for-a', r2);
+  await a.next(m => m.type === 'chat.message' && m.message.body === 'still-for-a');
+  assert.ok(!a.queue.some(m => m.type === 'chat.message' && m.message.body === 'not-for-a'));
+  const closed = once(a.socket, 'close'); a.socket.close(); await closed;
+  await b.next(m => m.type === 'participant.left' && m.participantId === a.initial.selfId);
+  await roomRequest(b, 'room.leave', { roomId: r1 });
+  assert.equal((await chatRequest(b, 'room', 'deleted', r1)).code, 'ROOM_NOT_FOUND');
+  assert.equal((await chatRequest(b, 'room', 'remaining', r2)).ok, true);
+});
+
 async function roomRequest(client, type, payload) {
   const requestId = 'room-test-' + ++requestSequence;
   client.socket.send(JSON.stringify({ kind: 'request', type, requestId, ...payload }));
