@@ -1,2 +1,8 @@
 # Only recorder state is local. ChatHistory Markdown is version controlled.
 /.chat-history/
+
+# Dependencies and generated build output.
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*

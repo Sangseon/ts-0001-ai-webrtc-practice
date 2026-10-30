@@ -1,0 +1,35 @@
+{
+  "name": "ts-0001-ai-webrtc-practice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "npm": ">=11"
+  },
+  "scripts": {
+    "dev:client": "vite --config client/vite.config.ts",
+    "dev:server": "tsx watch server/src/index.ts",
+    "typecheck": "npm run typecheck:client && npm run typecheck:server",
+    "typecheck:client": "tsc --project client/tsconfig.json --noEmit",
+    "typecheck:server": "tsc --project server/tsconfig.json --noEmit",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "npm run typecheck:client && vite build --config client/vite.config.ts",
+    "build:server": "tsc --project server/tsconfig.json",
+    "preview:client": "vite preview --config client/vite.config.ts",
+    "start:server": "node server/dist/index.js"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}
