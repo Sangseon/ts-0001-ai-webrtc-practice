@@ -17,11 +17,13 @@ function child(exe, args) {
 }
 const instrumentation = `(() => {
   window.mediaProbe = { calls: 0, streams: [], mode: 'native', held: null, options: [] };
-  if (${process.env.CHECK_SFU === '1'}) {
+  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1'}) {
     const NativeWebSocket=window.WebSocket;
     window.WebSocket=class extends NativeWebSocket {
       constructor(...args){super(...args);if(String(args[0]).endsWith('/ws'))window.mediaProbe.socket=this;}
     };
+    mediaProbe.pcs=[];const NativePeerConnection=window.RTCPeerConnection;
+    window.RTCPeerConnection=class extends NativePeerConnection {constructor(...args){super(...args);mediaProbe.pcs.push(this);}};
   }
   const original = navigator.mediaDevices?.getUserMedia.bind(navigator.mediaDevices);
   if (!original) return;
@@ -209,7 +211,18 @@ async function unmountScenarios(b) {
   await until(async () => { try { return (await fetch('http://127.0.0.1:3000/health')).ok; } catch { return false; } }, 'HTTP');
   const chrome = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
   const edge = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
-  if (process.env.CHECK_SFU === '1') {
+  if (process.env.CHECK_SFU_RECEIVE === '1') {
+    const killSfu = async () => {
+      const { execFileSync } = require('node:child_process');
+      const rows = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress'], { windowsHide: true, encoding: 'utf8' }));
+      const owned = new Set(children.map(p => p.pid));
+      for (let i = 0; i < rows.length; i++) for (const row of rows) if (owned.has(row.ParentProcessId)) owned.add(row.ProcessId);
+      const workers = rows.filter(row => row.Name === 'mediasoup-worker.exe' && owned.has(row.ProcessId));
+      assert.equal(workers.length, 1, 'exactly one test-owned SFU worker');
+      for (const row of workers) { process.kill(row.ProcessId); console.log('TEST_SFU_STOP pid=' + row.ProcessId); }
+    };
+    await require('./sfu-receive.scenarios.cjs')({ chrome, edge, until, click, selectMedia, waitState, ended, killSfu });
+  } else if (process.env.CHECK_SFU === '1') {
     await require('./sfu-browser.scenarios.cjs')({ chrome, edge, until, click, selectMedia, waitState, ended });
   } else {
     await virtual(chrome, 'Chrome'); await virtual(edge, 'Edge');

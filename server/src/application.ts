@@ -19,7 +19,8 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
   const media = createMediaService(
     (id, roomId) => !closing && [...sessions.values()].some(s => s.participant.participantId === id) && !!rooms.get(roomId)?.participantIds.has(id),
     roomId => !!rooms.get(roomId),
-    (id, slot, reason) => { for (const [socket, session] of sessions) if (session.participant.participantId === id) send(socket, { kind: 'event', type: 'media.closed', roomId: slot.roomId, mediaId: slot.mediaId, reason }); });
+    (id, slot, reason) => { for (const [socket, session] of sessions) if (session.participant.participantId === id) send(socket, { kind: 'event', type: 'media.closed', roomId: slot.roomId, mediaId: slot.mediaId, reason }); },
+    (id, event) => { for (const [socket, session] of sessions) if (session.participant.participantId === id) send(socket, event); });
 
   // ws forwards HTTP listen errors; consume them as well as the entrypoint's handler.
   wss.on('error', error => {

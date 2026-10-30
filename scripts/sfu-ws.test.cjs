@@ -43,11 +43,94 @@ async function client(app, options) {
     socket.send(JSON.stringify({ kind: 'request', type, requestId, ...payload }));
     return next(m => m.kind === 'response' && m.requestId === requestId);
   }
-  return { socket, next, initial, request, media: (action, roomId, mediaId, payload = {}) => request('media.request', { action, roomId, mediaId, payload }) };
+  return { socket, next, queue, initial, request, media: (action, roomId, mediaId, payload = {}) => request('media.request', { action, roomId, mediaId, payload }) };
 }
 const room = async (c, name) => (await c.request('room.create', { name })).room.roomId;
 const dtlsParameters = { role: 'client', fingerprints: [{ algorithm: 'sha-256', value: Array(32).fill('AA').join(':') }] };
 const rtpParameters = { codecs: [{ mimeType: 'audio/opus', payloadType: 111, clockRate: 48000, channels: 2, parameters: {} }], encodings: [{ ssrc: 12345 }], rtcp: { cname: 'test' } };
+
+test('Receive-only slot, paused Consumer handshake, scoped discovery and ownership', { timeout: 20000 }, async t => {
+  const app = await setup(t), a = await client(app), b = await client(app), c = await client(app);
+  const r1 = await room(a, 'receive-one'), r2 = await room(c, 'receive-two');
+  await b.request('room.join', { roomId: r1 }); await b.request('room.join', { roomId: r2 });
+  const at = await a.media('create', r1, 'send');
+  await a.media('connect', r1, 'send', { transportId: at.data.id, dtlsParameters });
+  const bt = await b.media('receive', r1, 'receive'); assert.equal(bt.ok, true);
+  const ct = await c.media('receive', r2, 'other'); assert.equal(ct.ok, true);
+  assert.equal((await b.media('create', r2, 'second')).ok, false);
+  assert.equal((await b.media('receive', r1, 'receive')).ok, false);
+  const p = await a.media('produce', r1, 'send', { transportId: at.data.id, kind: 'audio', rtpParameters });
+  const event = await b.next(m => m.type === 'media.producer.added');
+  assert.equal(event.mediaId, 'receive'); assert.equal(event.producer.producerId, p.data.producerId);
+  assert.deepEqual((await b.media('producers', r1, 'receive')).data.producers, [event.producer]);
+  assert.deepEqual((await a.media('producers', r1, 'send')).data.producers, []);
+  assert.deepEqual((await c.media('producers', r2, 'other')).data.producers, []);
+  assert.equal(c.queue.some(m => m.type === 'media.producer.added'), false);
+  const caps = (await b.media('capabilities', r1, 'receive')).data.capabilities;
+  const payload = { transportId: bt.data.id, producerId: p.data.producerId, rtpCapabilities: caps };
+  assert.equal((await b.media('consume', r2, 'receive', payload)).ok, false);
+  assert.equal((await c.media('consume', r2, 'other', { ...payload, transportId: ct.data.id })).ok, false);
+  assert.equal((await b.media('consume', r1, 'receive', { ...payload, transportId: ct.data.id })).ok, false);
+  assert.equal((await b.media('recv.connect', r1, 'receive', { transportId: ct.data.id, dtlsParameters })).ok, false);
+  assert.equal((await b.media('consume', r1, 'receive', { ...payload, rtpCapabilities: { codecs: [] } })).ok, false);
+  assert.equal((await b.media('consume', r1, 'receive', { ...payload, rtpCapabilities: { codecs: [{ mimeType: 'video/VP8', clockRate: 90000, preferredPayloadType: 96 }] } })).ok, false);
+  const consumer = await b.media('consume', r1, 'receive', payload); assert.equal(consumer.ok, true);
+  assert.equal((await b.media('stats', r1, 'receive')).data.consumers[0].paused, true);
+  assert.equal((await b.media('consume', r1, 'receive', payload)).ok, false);
+  assert.equal((await c.media('consumer.resume', r2, 'other', { consumerId: consumer.data.id })).ok, false);
+  assert.equal((await c.media('consumer.close', r2, 'other', { consumerId: consumer.data.id })).ok, false);
+  assert.equal((await b.media('consumer.resume', r1, 'receive', { consumerId: consumer.data.id })).ok, true);
+  assert.equal((await b.media('stats', r1, 'receive')).data.consumers[0].paused, false);
+  await a.media('close', r1, 'send');
+  await b.next(m => m.type === 'media.consumer.closed' && m.consumerId === consumer.data.id);
+  await b.next(m => m.type === 'media.producer.removed' && m.producer.producerId === p.data.producerId);
+  assert.equal((await b.media('stats', r1, 'receive')).data.consumers.length, 0);
+  assert.equal((await b.media('consume', r1, 'receive', payload)).ok, false);
+  assert.equal((await b.media('recv.close', r1, 'receive')).ok, true);
+  assert.equal((await b.media('close', r1, 'receive')).ok, true);
+  assert.equal((await b.media('receive', r2, 'fresh')).ok, true);
+});
+
+test('Receive cleanup preserves sender; in-flight consume cancellation cannot resurrect consumers', { timeout: 20000 }, async t => {
+  const app = await setup(t), a = await client(app), b = await client(app);
+  const r = await room(a, 'send-receive-separation'); await b.request('room.join', { roomId: r });
+  const at = await a.media('create', r, 'a'), bt = await b.media('create', r, 'b');
+  for (const [c, mid, transport] of [[a, 'a', at], [b, 'b', bt]]) {
+    await c.media('connect', r, mid, { transportId: transport.data.id, dtlsParameters });
+    assert.equal((await c.media('produce', r, mid, { transportId: transport.data.id, kind: 'audio', rtpParameters })).ok, true);
+  }
+  const recv = await b.media('receive', r, 'b');
+  const producerId = (await b.media('producers', r, 'b')).data.producers[0].producerId;
+  const rtpCapabilities = (await b.media('capabilities', r, 'b')).data.capabilities;
+  const payload = { transportId: recv.data.id, producerId, rtpCapabilities };
+  const consumer = await b.media('consume', r, 'b', payload); assert.equal(consumer.ok, true);
+  await b.media('consumer.close', r, 'b', { consumerId: consumer.data.id });
+  assert.equal((await b.media('stats', r, 'b')).data.producers.length, 1);
+  assert.equal((await b.media('stats', r, 'b')).data.consumers.length, 0);
+  await b.media('recv.close', r, 'b');
+  assert.equal((await b.media('stats', r, 'b')).data.producers.length, 1);
+  const replacement = await b.media('receive', r, 'b');
+  const consuming = b.media('consume', r, 'b', { ...payload, transportId: replacement.data.id });
+  const closing = b.media('close', r, 'b');
+  assert.equal((await consuming).ok, false); assert.equal((await closing).ok, true);
+  assert.equal((await b.media('consumer.resume', r, 'b', { consumerId: consumer.data.id })).ok, false);
+  assert.equal((await a.media('stats', r, 'a')).data.producers.length, 1);
+  assert.equal((await b.media('receive', r, 'new-b')).ok, true);
+});
+
+test('Receive cancellation, room leave and heartbeat retire every receive resource', { timeout: 20000 }, async t => {
+  const app = await setup(t, { heartbeatIntervalMs: 100 }), a = await client(app), b = await client(app, { autoPong: false });
+  const r = await room(a, 'receive-cleanup'); await b.request('room.join', { roomId: r });
+  const creating = a.media('receive', r, 'cancel');
+  const closing = a.media('close', r, 'cancel');
+  assert.equal((await closing).ok, true); assert.equal((await creating).ok, false);
+  assert.equal((await a.media('receive', r, 'cancel')).ok, false);
+  await a.media('receive', r, 'leave'); await b.media('receive', r, 'heartbeat');
+  await a.request('room.leave', { roomId: r });
+  assert.equal((await a.media('producers', r, 'leave')).ok, false);
+  await b.next(m => m.type === 'media.closed');
+  assert.equal(app.server.listening, true);
+});
 
 test('SFU signaling validates membership, ownership and one slot including concurrent creation', { timeout: 20000 }, async t => {
   const app = await setup(t), a = await client(app), b = await client(app);

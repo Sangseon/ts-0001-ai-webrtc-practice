@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { MediaAction, MediaClosed, MediaResponse } from '../../server/src/shared/mediaProtocol.js';
+import type { MediaAction, MediaClosed, MediaResponse, MediaEvent } from '../../server/src/shared/mediaProtocol.js';
 import { chatChannelLimit, chatTotalLimit, isServerMessage } from '../../server/src/shared/protocol.js';
 import type { ChatMessage, ChatTarget, Participant, Profile, ClientRequest, RoomSummary } from '../../server/src/shared/protocol.js';
 
@@ -21,6 +21,10 @@ export function useSession() {
   const socketRef = useRef<WebSocket | null>(null);
   const mediaPending = useRef(new Map<string, { action: MediaAction; roomId: string; mediaId: string; resolve: (value: MediaResponse) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>());
   const mediaListeners = useRef(new Set<(event: MediaClosed) => void>());
+  const remoteListeners = useRef(new Set<(event: MediaEvent) => void>());
+  const onMediaEvent = useCallback((listener: (event: MediaEvent) => void) => {
+    remoteListeners.current.add(listener); return () => { remoteListeners.current.delete(listener); };
+  }, []);
   function rejectMedia() {
     for (const p of mediaPending.current.values()) { clearTimeout(p.timer); p.reject(new Error('WebSocket 연결이 종료됐습니다.')); }
     mediaPending.current.clear();
@@ -92,6 +96,7 @@ export function useSession() {
         }
         if (value.kind === 'event') {
           if (value.type === 'media.closed') { for (const listener of mediaListeners.current) listener(value); return; }
+          if (value.type === 'media.producer.added' || value.type === 'media.producer.removed' || value.type === 'media.consumer.closed') { for (const listener of remoteListeners.current) listener(value); return; }
           if (value.type === 'session.ready') {
             setSelfId(value.selfId);
             setParticipants(value.participants);
@@ -193,7 +198,7 @@ export function useSession() {
   }
 
   return {
-    status, selfId, participants, rooms, joinedRooms, selectedRoomId, setSelectedRoomId, error, notice, saving, messages, profiles, mediaRequest, onMediaClosed,
+    status, selfId, participants, rooms, joinedRooms, selectedRoomId, setSelectedRoomId, error, notice, saving, messages, profiles, mediaRequest, onMediaClosed, onMediaEvent,
     sendChat: (target: ChatTarget, body: string) => sendRequest({ type: 'chat.send', ...target, body }),
     updateProfile: (profile: Profile) => sendRequest({ type: 'profile.update', profile }),
     createRoom: (name: string) => sendRequest({ type: 'room.create', name }),

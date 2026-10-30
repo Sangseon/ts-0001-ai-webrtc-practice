@@ -25,7 +25,8 @@
     "test:media": "node --import tsx --test scripts/media.test.cjs",
     "test:media:browser": "node scripts/media.browser.cjs",
     "test:sfu:ws": "npm run build:server && node --test scripts/sfu-ws.test.cjs",
-    "test:sfu:browser": "node scripts/sfu.browser.cjs"
+    "test:sfu:browser": "node scripts/sfu.browser.cjs",
+    "test:sfu:receive:browser": "node scripts/sfu-receive.browser.cjs"
   },
   "dependencies": {
     "mediasoup": "3.32.0",

@@ -1,5 +1,5 @@
-import { identifier, validMediaRequest, validMediaResponse } from './mediaProtocol.js';
-import type { MediaRequest, MediaResponse, MediaClosed } from './mediaProtocol.js';
+import { identifier, validMediaRequest, validMediaResponse, validMediaEvent } from './mediaProtocol.js';
+import type { MediaRequest, MediaResponse, MediaClosed, MediaEvent } from './mediaProtocol.js';
 export const avatars = [
   { id: 'bear', label: '곰', emoji: '🐻' },
   { id: 'cat', label: '고양이', emoji: '🐱' },
@@ -25,7 +25,7 @@ export type ClientRequest = ProfileRequest | RoomRequest | ChatRequest | MediaRe
 export type ErrorCode = 'INVALID_JSON' | 'INVALID_MESSAGE' | 'UNKNOWN_TYPE' | 'INVALID_PROFILE'
   | 'INVALID_ROOM_NAME' | 'ROOM_NOT_FOUND' | 'ALREADY_JOINED' | 'NOT_JOINED' | 'INVALID_CHAT' | 'MEDIA_ERROR';
 export type ServerMessage =
-  | MediaResponse | MediaClosed
+  | MediaResponse | MediaClosed | MediaEvent
   | ({ kind: 'response'; type: 'chat.send'; requestId: string; ok: true; messageId: string } & ChatTarget)
   | { kind: 'event'; type: 'chat.message'; message: ChatMessage }
   | { kind: 'event'; type: 'session.ready'; selfId: string; participants: Participant[] }
@@ -113,6 +113,9 @@ export function isServerMessage(value: unknown): value is ServerMessage {
   if (value.kind === 'event') {
     switch (value.type) {
       case 'media.closed': return identifier(value.roomId) && identifier(value.mediaId) && typeof value.reason === 'string';
+      case 'media.producer.added':
+      case 'media.producer.removed':
+      case 'media.consumer.closed': return validMediaEvent(value);
       case 'session.ready': return validId(value.selfId) && Array.isArray(value.participants) && value.participants.every(isParticipant);
       case 'chat.message': {
         const m = value.message;
