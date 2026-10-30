@@ -9,7 +9,7 @@ module.exports = async ({pages,until,click,selectMedia,waitState,ended,control})
   const state=p=>p.evaluate("({...document.querySelector('[data-testid=sfu-state]').dataset})");
   const stats=p=>p.evaluate("JSON.parse(document.querySelector('[data-testid=sfu-stats]').textContent)");
   const self=p=>p.evaluate("document.querySelector('[data-testid=self-id]').textContent");
-  const tiles=p=>p.evaluate("Array.from(document.querySelectorAll('[data-remote-participant]')).map(e=>e.dataset.remoteParticipant).sort()");
+  const tiles=p=>p.evaluate("Array.from(document.querySelectorAll('[data-remote-participant][data-has-tracks=true]')).map(e=>e.dataset.remoteParticipant).sort()");
   async function joined(p,r) {return p.evaluate(`!!document.querySelector('[data-joined-room-id="${r}"]')`);}
   async function join(p,r) {await until(()=>p.evaluate(`!!document.querySelector('[data-room-id="${r}"] button')`),'room visible');await p.evaluate(`document.querySelector('[data-room-id="${r}"] button').click()`);await until(()=>joined(p,r),'room joined');}
   async function leave(p,r) {await p.evaluate(`document.querySelector('[data-joined-room-id="${r}"] button').click()`);await p.evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='선택한 방 퇴장').click()");await until(async()=>!(await joined(p,r)),'room left');}

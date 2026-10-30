@@ -8,7 +8,7 @@ export function LocalMedia() {
 
 export function LocalMediaControls({ media, onStop }: { media: ReturnType<typeof useLocalMedia>; onStop?: () => void }) {
   const [selection, setSelection] = useState({ video: true, audio: true });
-  const locked = media.pending || media.status === 'ready';
+  const locked = media.pending || media.cameraPending || media.status === 'ready';
   const labels = { idle: '시작 전 / 종료됨', requesting: '선택한 미디어 권한 및 미리보기 준비 중', ready: '선택한 로컬 미디어 사용 중', stopping: '종료 요청됨 · 대기 중인 권한 요청의 결과를 기다립니다', error: '미디어 오류' };
   return <section aria-label="로컬 미디어">
     <h2>로컬 카메라·마이크 미리보기</h2>
@@ -23,8 +23,8 @@ export function LocalMediaControls({ media, onStop }: { media: ReturnType<typeof
     <button id="media-start" disabled={locked || (!selection.video && !selection.audio)} onClick={() => void media.start(selection)}>로컬 미디어 시작</button>{' '}
     <button id="media-stop" disabled={media.status !== 'ready' && media.status !== 'requesting'} onClick={onStop ?? media.stop}>로컬 미디어 종료</button>
     {media.error && <p role="alert" data-testid="media-error">{media.error}</p>}
-    <video id="local-preview" ref={media.videoRef} hidden={!selection.video} muted autoPlay playsInline aria-label="내 카메라 미리보기" />
-    {!selection.video && selection.audio && <p>마이크만 획득합니다. 영상 미리보기와 로컬 음성 재생은 하지 않습니다.</p>}
+    <video id="local-preview" ref={media.videoRef} hidden={!media.tracks.some(t => t.kind === 'video' && t.readyState === 'live')} muted autoPlay playsInline aria-label="내 카메라 미리보기" />
+    {!media.tracks.some(t => t.kind === 'video' && t.readyState === 'live') && selection.audio && <p>현재 영상 미리보기는 없으며 로컬 음성은 재생하지 않습니다.</p>}
     <ul data-testid="media-tracks">
       {['video', 'audio'].map(kind => {
         const tracks = media.tracks.filter(track => track.kind === kind);

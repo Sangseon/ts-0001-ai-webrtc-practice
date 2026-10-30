@@ -40,6 +40,9 @@ export function mediaErrorMessage(error: unknown): string {
 export function useLocalMedia() {
   const [state, setState] = useState<MediaState>({ status: 'idle', tracks: [], error: '' });
   const [pending, setPending] = useState(false);
+  const [cameraPending, setCameraPending] = useState(false);
+  const cameraRequest = useRef(false);
+  const trackEnded = useRef<(() => void) | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   // React can clear the DOM ref before passive unmount cleanup runs.
   const attachedVideo = useRef<HTMLVideoElement | null>(null);
@@ -80,6 +83,52 @@ export function useLocalMedia() {
       error: result.failed ? '일부 트랙을 종료하지 못했습니다. 브라우저의 장치 사용 표시를 확인해주세요.' : '' });
   }
 
+  function dropVideo(expected?: MediaStreamTrack) {
+    const stream = streamRef.current;
+    if (!stream) return;
+    for (const track of stream.getVideoTracks()) if (!expected || track === expected) {
+      if (trackEnded.current) track.removeEventListener('ended', trackEnded.current);
+      track.stop(); stream.removeTrack(track);
+    }
+    if (!stream.getVideoTracks().length) {
+      const video = attachedVideo.current ?? videoRef.current;
+      if (video) { video.pause(); video.srcObject = null; }
+      attachedVideo.current = null;
+    }
+    if (mounted.current) setState(s => ({ ...s, tracks: trackInfo(stream) }));
+  }
+
+  async function acquireVideo(valid: () => boolean) {
+    const stream = streamRef.current, epoch = generation.current;
+    if (!stream || cameraRequest.current || stream.getVideoTracks().some(t => t.readyState === 'live')) throw new Error('카메라가 이미 사용 중이거나 획득 중입니다.');
+    const current = () => mounted.current && generation.current === epoch && streamRef.current === stream && valid();
+    cameraRequest.current = true; setCameraPending(true);
+    let acquired: MediaStream | undefined;
+    try {
+      if (!window.isSecureContext) throw new DOMException('Secure context required', 'SecurityError');
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('MediaDevices API 미지원');
+      acquired = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      if (!current()) throw new Error('취소된 카메라 획득');
+      if (!matchesMediaSelection(acquired, { video: true, audio: false }) || acquired.getVideoTracks().length !== 1) throw new DOMException('Missing video', 'NotFoundError');
+      const track = acquired.getVideoTracks()[0]!;
+      stream.addTrack(track);
+      if (trackEnded.current) track.addEventListener('ended', trackEnded.current);
+      const video = videoRef.current;
+      if (!video) throw new Error('미리보기 요소 없음');
+      attachedVideo.current = video; video.muted = true; video.srcObject = stream;
+      await video.play();
+      if (!current()) throw new Error('취소된 카메라 미리보기');
+      setState(s => ({ ...s, tracks: trackInfo(stream), error: '' }));
+      return track;
+    } catch (error) {
+      if (acquired) for (const track of acquired.getTracks()) { dropVideo(track); track.stop(); }
+      throw error;
+    } finally {
+      cameraRequest.current = false;
+      if (mounted.current) setCameraPending(false);
+    }
+  }
+
   async function start(selection: MediaSelection) {
     if (!mounted.current || request.current !== null || streamRef.current) return;
     const constraints = mediaConstraints(selection);
@@ -115,6 +164,7 @@ export function useLocalMedia() {
         const result = release();
         setState({ status: 'error', tracks: result.tracks, error: '카메라 또는 마이크 트랙이 예기치 않게 종료되었습니다. 장치·권한 상태를 확인한 뒤 다시 시작해주세요.' + cleanupWarning(result.failed) });
       };
+      trackEnded.current = ended;
       for (const track of stream.getTracks()) track.addEventListener('ended', ended);
       detachListeners.current = () => { for (const track of stream.getTracks()) track.removeEventListener('ended', ended); };
       if (!constraints.video) {
@@ -150,5 +200,5 @@ export function useLocalMedia() {
     }
   }
 
-  return { ...state, pending, start, stop, videoRef, streamRef };
+  return { ...state, pending, cameraPending, start, stop, dropVideo, acquireVideo, videoRef, streamRef };
 }

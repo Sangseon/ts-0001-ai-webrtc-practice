@@ -49,6 +49,47 @@ const room = async (c, name) => (await c.request('room.create', { name })).room.
 const dtlsParameters = { role: 'client', fingerprints: [{ algorithm: 'sha-256', value: Array(32).fill('AA').join(':') }] };
 const rtpParameters = { codecs: [{ mimeType: 'audio/opus', payloadType: 111, clockRate: 48000, channels: 2, parameters: {} }], encodings: [{ ssrc: 12345 }], rtcp: { cname: 'test' } };
 
+test('Audio pause/resume preserves IDs, propagates authoritative peers, and rejects wrong kind/owner/generation', {timeout:20000}, async t=>{
+  const app=await setup(t),a=await client(app),b=await client(app),c=await client(app);
+  const r=await room(a,'controls'),other=await room(a,'other');for(const p of [b,c])await p.request('room.join',{roomId:r});
+  const at=await a.media('create',r,'controls-a');await a.media('connect',r,'controls-a',{transportId:at.data.id,dtlsParameters});
+  const audio=await a.media('produce',r,'controls-a',{transportId:at.data.id,kind:'audio',rtpParameters});
+  const videoRtp={codecs:[{mimeType:'video/VP8',payloadType:96,clockRate:90000,parameters:{}}],encodings:[{ssrc:99999}],rtcp:{cname:'video'}};
+  const video=await a.media('produce',r,'controls-a',{transportId:at.data.id,kind:'video',rtpParameters:videoRtp});assert.equal(video.ok,true);
+  const caps=(await a.media('capabilities',r,'caps')).data.capabilities;
+  const consumers=[];
+  for(const [p,mid] of [[b,'controls-b'],[c,'controls-c']]) {const recv=await p.media('receive',r,mid);const consumer=await p.media('consume',r,mid,{transportId:recv.data.id,producerId:audio.data.producerId,rtpCapabilities:caps});await p.media('consumer.resume',r,mid,{consumerId:consumer.data.id});consumers.push(consumer.data.id);}
+  const payload={transportId:at.data.id,producerId:audio.data.producerId};
+  assert.equal((await b.media('producer.pause',r,'controls-b',payload)).ok,false);
+  assert.equal((await a.media('producer.pause',other,'controls-a',payload)).ok,false);
+  assert.equal((await a.media('producer.pause',r,'old',payload)).ok,false);
+  assert.equal((await a.media('producer.pause',r,'controls-a',{...payload,producerId:video.data.producerId})).ok,false);
+  for(let i=0;i<5;i++) {
+    assert.equal((await a.media('producer.pause',r,'controls-a',payload)).data.paused,true);
+    for(const [p,mid] of [[b,'controls-b'],[c,'controls-c']]) {
+      const peers=(await p.media('producers',r,mid)).data;assert.equal(peers.peers.find(p=>p.participantId===a.initial.selfId).muted,true);
+      const s=(await p.media('stats',r,mid)).data;assert.equal(s.consumers[0].producerPaused,true);
+    }
+    assert.equal((await a.media('producer.resume',r,'controls-a',payload)).data.paused,false);
+  }
+  const snapshot=await app.diagnostics.snapshot();assert.deepEqual(snapshot.media.slots.flatMap(s=>s.consumers.map(c=>c.id)).sort(),consumers.sort());
+  assert.equal(snapshot.media.slots.find(s=>s.participantId===a.initial.selfId).producers.find(p=>p.kind==='audio').id,audio.data.producerId);
+  await a.media('producer.close',r,'controls-a',payload);assert.equal((await a.media('producer.resume',r,'controls-a',payload)).ok,false);
+  assert.equal((await a.media('stats',r,'controls-a')).data.producers.length,1);
+});
+
+test('Paused audio creation is gated before RTP; control/close races cannot revive old ownership', {timeout:20000}, async t=>{
+  const app=await setup(t),a=await client(app),r=await room(a,'muted-start');
+  const at=await a.media('create',r,'muted');await a.media('connect',r,'muted',{transportId:at.data.id,dtlsParameters});
+  assert.equal((await a.media('produce',r,'muted',{transportId:at.data.id,kind:'video',rtpParameters,paused:true})).code,'INVALID_MESSAGE');
+  const audio=await a.media('produce',r,'muted',{transportId:at.data.id,kind:'audio',rtpParameters,paused:true});assert.equal(audio.ok,true);
+  assert.equal((await a.media('stats',r,'muted')).data.producers[0].paused,true);
+  const resuming=a.media('producer.resume',r,'muted',{transportId:at.data.id,producerId:audio.data.producerId});const closing=a.media('close',r,'muted');
+  const response=await resuming;if(!response.ok)assert.equal(response.code,'MEDIA_ERROR');assert.equal((await closing).ok,true);
+  assert.equal((await a.media('producer.resume',r,'muted',{transportId:at.data.id,producerId:audio.data.producerId})).ok,false);
+  await assertResources(app,{slots:0,routers:1,send:0,recv:0,producers:0,consumers:0});
+});
+
 async function assertResources(app, expected) {
   const { media } = await app.diagnostics.snapshot();
   const slots = media.slots;
@@ -88,7 +129,10 @@ test('Three participants form six remote audio consumers; repeated churn and sin
     for(let i=1;i<3;i++) assert.equal((await clients[i].media('consume',r,'multi-'+i,{transportId:resources[i].recv,producerId:created.producer,rtpCapabilities:caps})).ok,true);
     const consuming=a.media('consume',r,mid,{transportId:created.recv,producerId:resources[1].producer,rtpCapabilities:caps});
     const ending=a.media('close',r,mid);
-    assert.equal((await consuming).ok,false); assert.equal((await ending).ok,true);
+    const consumed=await consuming;
+    if (!consumed.ok) assert.equal(consumed.code,'MEDIA_ERROR');
+    assert.equal((await ending).ok,true);
+    if (consumed.ok) assert.equal((await a.media('consumer.resume',r,mid,{consumerId:consumed.data.id})).ok,false);
     await assertResources(app,{slots:2,routers:1,send:2,recv:2,producers:2,consumers:2});
     assert.equal((await a.media('receive',r,mid)).ok,false);
   }
@@ -229,7 +273,8 @@ test('Receive cancellation, room leave and heartbeat retire every receive resour
   const b = await client(app, { autoPong: false }); await b.request('room.join', { roomId: r }); await b.media('receive', r, 'heartbeat');
   await a.request('room.leave', { roomId: r });
   assert.equal((await a.media('producers', r, 'leave')).ok, false);
-  await b.next(m => m.type === 'media.closed');
+  await a.next(m => m.type === 'participant.left' && m.participantId === b.initial.selfId);
+  await assertResources(app,{slots:0,routers:0,send:0,recv:0,producers:0,consumers:0});
   assert.equal(app.server.listening, true);
 });
 

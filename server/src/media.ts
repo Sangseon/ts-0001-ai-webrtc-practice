@@ -1,7 +1,7 @@
 import { createWorker } from 'mediasoup';
 import type { Worker, Router, WebRtcTransport, Producer, Consumer, DtlsParameters, RtpParameters, RtpCapabilities } from 'mediasoup/types';
 import { closeWorker, mediaCodecs } from './sfu.js';
-import type { MediaRequest, MediaEvent, RemoteProducer } from './shared/mediaProtocol.js';
+import type { MediaRequest, MediaEvent, RemoteProducer, MediaPeer } from './shared/mediaProtocol.js';
 
 type Slot = { roomId: string; mediaId: string; transport?: WebRtcTransport; producers: Map<string, Producer>; busy: boolean; connected: boolean; timer: ReturnType<typeof setTimeout>; done: Promise<void>; finish: () => void;
   recv?: WebRtcTransport; consumers: Map<string, Consumer>; receiving: boolean; receiveDone: Promise<void>; recvConnected: boolean };
@@ -19,6 +19,19 @@ export function createMediaService(isMember: (participantId: string, roomId: str
   let workerPromise: Promise<Worker> | undefined;
   let closing = false;
   let failed = false;
+  let revision = 0;
+  function peerSnapshot(id: string, roomId: string) {
+    const peers: MediaPeer[] = [];
+    for (const [owner, slot] of active) if (owner !== id && slot.roomId === roomId) {
+      const audio = [...slot.producers.values()].find(p => p.kind === 'audio');
+      peers.push({ participantId: owner, sending: !!slot.transport, video: [...slot.producers.values()].some(p => p.kind === 'video'), audio: !!audio, muted: audio?.paused ?? false });
+    }
+    return { revision, peers };
+  }
+  function publishPeers(roomId: string) {
+    revision++;
+    for (const [id, slot] of active) if (slot.roomId === roomId) emit(id, { kind: 'event', type: 'media.peers', roomId, mediaId: slot.mediaId, ...peerSnapshot(id, roomId) });
+  }
 
   function retire(id: string, mediaId: string, cleanup = false) {
     const ids = retired.get(id) ?? new Set<string>();
@@ -43,6 +56,7 @@ export function createMediaService(isMember: (participantId: string, roomId: str
     slot.producers.clear();
     slot.transport?.close();
     closeReceive(slot);
+    publishPeers(slot.roomId);
     notify(id, slot, reason);
   }
   function closeReceive(slot: Slot) {
@@ -79,6 +93,7 @@ export function createMediaService(isMember: (participantId: string, roomId: str
           { protocol: 'tcp', ip: '127.0.0.1', portRange: { min: 40000, max: 40100 } }], enableUdp: true, enableTcp: true, preferUdp: true });
         if (!current()) { transport.close(); throw new Error('취소된 수신 Transport'); }
         slot.recv = transport; clearTimeout(slot.timer); // No sender yet is a valid receive-only session.
+        publishPeers(slot.roomId);
         const failed = () => { if (current() && slot.recv === transport) stop(id, '수신 Transport 종료'); };
         transport.on('dtlsstatechange', state => { if (state === 'failed' || state === 'closed') failed(); });
         transport.on('icestatechange', state => { if (state === 'disconnected' || state === 'closed') failed(); });
@@ -109,7 +124,7 @@ export function createMediaService(isMember: (participantId: string, roomId: str
           if (current()) emit(id, { kind: 'event', type: 'media.consumer.closed', roomId: slot.roomId, mediaId: slot.mediaId, consumerId: consumer.id });
         };
         consumer.once('producerclose', remove); consumer.once('transportclose', remove);
-        return { id: consumer.id, producerId: producer.id, participantId: owner, kind: consumer.kind, rtpParameters: consumer.rtpParameters };
+        return { id: consumer.id, producerId: producer.id, participantId: owner, kind: consumer.kind, rtpParameters: consumer.rtpParameters, producerPaused: consumer.producerPaused };
       }
       const consumer = slot.consumers.get(payload.consumerId as string);
       if (!consumer || consumer.closed) throw new Error('소유한 Consumer가 아닙니다.');
@@ -197,6 +212,7 @@ export function createMediaService(isMember: (participantId: string, roomId: str
         });
         if (active.get(id) !== slot || !isMember(id, roomId) || closing) { transport.close(); throw new Error('Transport 생성이 취소됐습니다.'); }
         slot.transport = transport; slot.busy = false;
+        publishPeers(roomId);
         transport.on('dtlsstatechange', state => { if (active.get(id) === slot && (state === 'failed' || state === 'closed')) stop(id, 'DTLS 연결 종료', roomId); });
         transport.on('icestatechange', state => { if (active.get(id) === slot && (state === 'disconnected' || state === 'closed')) stop(id, 'ICE 연결 종료', roomId); });
         transport.observer.once('close', () => { if (active.get(id) === slot) stop(id, 'Transport 종료'); });
@@ -209,7 +225,7 @@ export function createMediaService(isMember: (participantId: string, roomId: str
     if (action === 'producers') {
       const producers: RemoteProducer[] = [];
       for (const [owner, source] of active) if (owner !== id && source.roomId === roomId) for (const producer of source.producers.values()) producers.push({ producerId: producer.id, participantId: owner, kind: producer.kind });
-      return { producers };
+      return { producers, ...peerSnapshot(id, roomId) };
     }
     if (['receive', 'recv.connect', 'consume', 'consumer.resume', 'consumer.close', 'recv.close'].includes(action)) return receive(id, slot, request);
     const current = () => active.get(id) === slot && isMember(id, roomId) && !closing;
@@ -217,12 +233,12 @@ export function createMediaService(isMember: (participantId: string, roomId: str
       const producers = await Promise.all([...slot.producers.values()].map(async producer => {
         const stats = await producer.getStats().catch(error => { if (producer.closed) return []; throw error; });
         const inbound = stats.filter(s => s.type === 'inbound-rtp');
-        return { id: producer.id, kind: producer.kind, packets: inbound.reduce((sum, s) => sum + s.packetCount, 0), bytes: inbound.reduce((sum, s) => sum + s.byteCount, 0) };
+        return { id: producer.id, kind: producer.kind, paused: producer.paused, packets: inbound.reduce((sum, s) => sum + s.packetCount, 0), bytes: inbound.reduce((sum, s) => sum + s.byteCount, 0) };
       }));
       if (!current()) throw new Error('통계 조회 중 연결이 종료됐습니다.');
       const consumers = await Promise.all([...slot.consumers.values()].map(async consumer => {
         const outbound = (await consumer.getStats().catch(error => { if (consumer.closed) return []; throw error; })).filter(s => s.type === 'outbound-rtp');
-        return { id: consumer.id, producerId: consumer.producerId, kind: consumer.kind, paused: consumer.paused, packets: outbound.reduce((sum, s) => sum + s.packetCount, 0), bytes: outbound.reduce((sum, s) => sum + s.byteCount, 0) };
+        return { id: consumer.id, producerId: consumer.producerId, kind: consumer.kind, paused: consumer.paused, producerPaused: consumer.producerPaused, packets: outbound.reduce((sum, s) => sum + s.packetCount, 0), bytes: outbound.reduce((sum, s) => sum + s.byteCount, 0) };
       }));
       if (!current()) throw new Error('통계 조회 중 연결 종료');
       return { iceState: slot.transport?.iceState ?? 'new', dtlsState: slot.transport?.dtlsState ?? 'new', producers, recvIceState: slot.recv?.iceState ?? 'closed', recvDtlsState: slot.recv?.dtlsState ?? 'closed', consumers };
@@ -236,6 +252,17 @@ export function createMediaService(isMember: (participantId: string, roomId: str
       return { closed: true };
     }
     if (slot.busy) throw new Error('미디어 요청이 이미 처리 중입니다.');
+    if (action === 'producer.pause' || action === 'producer.resume') {
+      const producer = slot.producers.get(payload.producerId as string);
+      if (!producer || producer.closed || producer.kind !== 'audio') throw new Error('소유한 활성 Audio Producer가 아닙니다.');
+      slot.busy = true; slot.done = new Promise<void>(resolve => { slot.finish = resolve; });
+      try {
+        if (action === 'producer.pause') await producer.pause(); else await producer.resume();
+        if (!current() || producer.closed) throw new Error('취소된 마이크 제어');
+        publishPeers(roomId);
+        return { producerId: producer.id, paused: producer.paused };
+      } finally { slot.busy = false; slot.finish(); }
+    }
     if (action === 'connect' && slot.connected) throw new Error('이미 연결한 Transport입니다.');
     if (action === 'produce' && [...slot.producers.values()].some(p => p.kind === payload.kind)) throw new Error('이미 해당 종류의 Producer가 있습니다.');
     slot.busy = true;
@@ -248,11 +275,12 @@ export function createMediaService(isMember: (participantId: string, roomId: str
         return { connected: true };
       }
       if (!slot.connected) throw new Error('Transport를 먼저 연결해주세요.');
-      const producer = await slot.transport.produce({ kind: payload.kind as 'audio' | 'video', rtpParameters: payload.rtpParameters as RtpParameters });
+      const producer = await slot.transport.produce({ kind: payload.kind as 'audio' | 'video', rtpParameters: payload.rtpParameters as RtpParameters, paused: payload.paused === true });
       if (!current()) { producer.close(); throw new Error('Producer 생성이 취소됐습니다.'); }
       slot.producers.set(producer.id, producer);
-      producer.observer.once('close', () => { slot.producers.delete(producer.id); announce(id, slot, producer, 'media.producer.removed'); });
+      producer.observer.once('close', () => { slot.producers.delete(producer.id); announce(id, slot, producer, 'media.producer.removed'); publishPeers(roomId); });
       announce(id, slot, producer, 'media.producer.added');
+      publishPeers(roomId);
       clearTimeout(slot.timer);
       return { producerId: producer.id };
     } catch (error) {
@@ -287,8 +315,8 @@ export function createMediaService(isMember: (participantId: string, roomId: str
       const roomResources = await Promise.all([...routers].map(async ([roomId, entry]) => ({ roomId, dump: await (await entry.promise).dump() })));
       const slots = [...active].map(([participantId, slot]) => ({ participantId, roomId: slot.roomId, mediaId: slot.mediaId,
         sendTransportId: slot.transport?.id, recvTransportId: slot.recv?.id,
-        producers: [...slot.producers.values()].map(p => ({ id: p.id, kind: p.kind })),
-        consumers: [...slot.consumers.values()].map(c => ({ id: c.id, producerId: c.producerId, kind: c.kind })) }));
+        producers: [...slot.producers.values()].map(p => ({ id: p.id, kind: p.kind, paused: p.paused })),
+        consumers: [...slot.consumers.values()].map(c => ({ id: c.id, producerId: c.producerId, kind: c.kind, producerPaused: c.producerPaused })) }));
       return { slots, roomResources, native, draining: draining.size, pending: tasks.size };
     },
     closeRouter(roomId: string) { routers.get(roomId)?.router?.close(); },

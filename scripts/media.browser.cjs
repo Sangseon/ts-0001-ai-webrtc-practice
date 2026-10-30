@@ -16,11 +16,12 @@ function child(exe, args) {
   return p;
 }
 const instrumentation = `(() => {
-  window.mediaProbe = { calls: 0, streams: [], mode: 'native', held: null, options: [] };
-  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1' || process.env.CHECK_SFU_MULTI === '1'}) {
+  window.mediaProbe = { calls: 0, streams: [], tracks: [], requests: [], mode: 'native', held: null, options: [] };
+  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1' || process.env.CHECK_SFU_MULTI === '1' || process.env.CHECK_SFU_CONTROL === '1'}) {
     const NativeWebSocket=window.WebSocket;
     window.WebSocket=class extends NativeWebSocket {
       constructor(...args){super(...args);if(String(args[0]).endsWith('/ws'))window.mediaProbe.socket=this;}
+      send(data){try{const m=JSON.parse(data);if(m.type==='media.request')mediaProbe.requests.push(m.action);}catch{}return super.send(data);}
     };
     mediaProbe.pcs=[];const NativePeerConnection=window.RTCPeerConnection;
     window.RTCPeerConnection=class extends NativePeerConnection {constructor(...args){super(...args);mediaProbe.pcs.push(this);}};
@@ -32,7 +33,7 @@ const instrumentation = `(() => {
     if (probe.mode.endsWith('Error')) throw new DOMException('simulated', probe.mode);
     if ((probe.mode === 'missingVideo' && options.video) || (probe.mode === 'missingAudio' && options.audio)) throw new DOMException('simulated missing kind', 'NotFoundError');
     if (probe.mode === 'hold') await new Promise(resolve => { probe.held = resolve; });
-    const stream = await original(options); probe.streams.push(stream);
+    const stream = await original(options); probe.streams.push(stream); probe.tracks.push(...stream.getTracks());
     if (probe.mode === 'partial') for (const track of stream.getAudioTracks()) { track.stop(); stream.removeTrack(track); }
     return stream;
   };
@@ -73,7 +74,7 @@ async function browser(exe) {
 const state = b => b.evaluate("document.querySelector('[data-testid=media-status]').dataset.status");
 const waitState = (b, value) => until(async () => (await state(b)) === value, value);
 const click = (b, id) => b.evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
-const ended = b => b.evaluate('mediaProbe.streams.every(s => s.getTracks().every(t => t.readyState === "ended"))');
+const ended = b => b.evaluate('mediaProbe.tracks.every(t => t.readyState === "ended")');
 async function selectMedia(b, video, audio) {
   for (const [id, checked] of [['media-video', video], ['media-audio', audio]]) {
     await b.evaluate(`(()=>{const input=document.getElementById(${JSON.stringify(id)});if(input.checked!==${checked})input.click();})()`);
@@ -206,7 +207,7 @@ async function unmountScenarios(b) {
     catch (error) { if (!error.cause) throw error; }
   }
   let control;
-  if (process.env.CHECK_SFU_MULTI === '1') {
+  if (process.env.CHECK_SFU_MULTI === '1' || process.env.CHECK_SFU_CONTROL === '1') {
     const server = fork(join(__dirname, 'sfu-multi-server.cjs'), [], { cwd: workspace, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     children.push(server); server.stdout.on('data', () => {}); server.stderr.on('data', data => process.stderr.write(data));
     let seq=0; const pending=new Map();
@@ -218,7 +219,10 @@ async function unmountScenarios(b) {
   await until(async () => { try { return (await fetch('http://127.0.0.1:3000/health')).ok; } catch { return false; } }, 'HTTP');
   const chrome = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
   const edge = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
-  if (process.env.CHECK_SFU_MULTI === '1') {
+  if (process.env.CHECK_SFU_CONTROL === '1') {
+    const c = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
+    await require('./sfu-controls.scenarios.cjs')({ pages: [chrome,edge,c], until, click, selectMedia, waitState, ended, control });
+  } else if (process.env.CHECK_SFU_MULTI === '1') {
     const c = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
     const d = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
     await require('./sfu-multi.scenarios.cjs')({ pages: [chrome,edge,c,d], until, click, selectMedia, waitState, ended, control });

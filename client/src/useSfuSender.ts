@@ -1,23 +1,40 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Device } from 'mediasoup-client';
 import type { Producer, Consumer, ConsumerOptions, Transport, TransportOptions, RtpCapabilities } from 'mediasoup-client/types';
-import type { RemoteProducer } from '../../server/src/shared/mediaProtocol.js';
+import { validPeerSnapshot } from '../../server/src/shared/mediaProtocol.js';
+import type { RemoteProducer, MediaPeer, MediaAction } from '../../server/src/shared/mediaProtocol.js';
+import { mediaErrorMessage } from './useLocalMedia';
 import type { useSession } from './useSession';
 import type { useLocalMedia } from './useLocalMedia';
 
 export type RemoteTrack = { participantId: string; producerId: string; consumerId: string; kind: 'audio' | 'video'; track: MediaStreamTrack };
 type Attempt = { mediaId: string; roomId: string; transport?: Transport; producers: Producer[]; timer?: ReturnType<typeof setTimeout>;
+  device?: Device; send?: (action: MediaAction, payload?: Record<string, unknown>) => Promise<Record<string, unknown>>; peersRevision: number; peers: MediaPeer[]; cameraTrack?: MediaStreamTrack;
   recv?: Transport; receiveOnly: boolean; consumers: Map<string, { consumer: Consumer; participantId: string }>; discovered: Map<string, RemoteProducer>; removed: Set<string>; closedConsumers: Set<string>; pending: Set<string>; listing: boolean; subscribe?: (producer: RemoteProducer) => void; recvTimer?: ReturnType<typeof setTimeout> };
 export function useSfuSender(session: ReturnType<typeof useSession>, local: ReturnType<typeof useLocalMedia>) {
   const current = useRef<Attempt | null>(null);
   const mounted = useRef(false);
   const stopping = useRef<Promise<void> | null>(null);
+  const localOwner = useRef(local); localOwner.current = local;
+  const mutedIntent = useRef(false);
+  const cameraDisabled = useRef(false);
+  const cameraEpoch = useRef(0);
+  const cameraBusy = useRef(false);
+  const cameraOffBusy = useRef(false);
+  const micBusy = useRef(false);
+  const [cameraState, setCameraState] = useState('미획득');
+  const [micState, setMicState] = useState('미획득');
+  const [controlError, setControlError] = useState('');
+  const [muted, setMuted] = useState(false);
+  const [remotePeers, setRemotePeers] = useState<MediaPeer[]>([]);
   const [state, setState] = useState({ phase: 'idle', activeMediaRoomId: '', mediaId: '', transportId: '', connection: 'new', error: '', producers: [] as { id: string; kind: string }[] });
   const [stats, setStats] = useState<Record<string, unknown>>({});
   const [remoteTracks, setRemoteTracks] = useState<RemoteTrack[]>([]);
   const [recvConnection, setRecvConnection] = useState('new');
   const rpc = session.mediaRequest;
   const dispose = useCallback((attempt: Attempt) => {
+    cameraEpoch.current++;
+    if (attempt.cameraTrack) localOwner.current.dropVideo(attempt.cameraTrack);
     clearTimeout(attempt.timer);
     clearTimeout(attempt.recvTimer);
     for (const { consumer } of attempt.consumers.values()) consumer.close();
@@ -30,7 +47,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
     const attempt = current.current;
     if (!attempt) return Promise.resolve();
     current.current = null; dispose(attempt);
-    if (mounted.current) { setRemoteTracks([]); setRecvConnection('closed'); setState(s => ({ ...s, phase: 'stopping', activeMediaRoomId: '', producers: [], connection: 'closed' })); setStats({}); }
+    if (mounted.current) { setRemotePeers([]); setCameraState('연결 종료'); setMicState('연결 종료'); setRemoteTracks([]); setRecvConnection('closed'); setState(s => ({ ...s, phase: 'stopping', activeMediaRoomId: '', producers: [], connection: 'closed' })); setStats({}); }
     const task = rpc('close', attempt.roomId, attempt.mediaId).then(() => {
       if (mounted.current) setState(s => ({ ...s, phase: 'idle', activeMediaRoomId: '', error: '' }));
     }, error => {
@@ -51,16 +68,25 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
   useEffect(() => session.onMediaClosed(event => {
     const attempt = current.current;
     if (attempt?.mediaId !== event.mediaId || attempt.roomId !== event.roomId) return;
-    current.current = null; dispose(attempt); setStats({}); setRemoteTracks([]); setRecvConnection('closed');
+    current.current = null; dispose(attempt); setStats({}); setRemoteTracks([]); setRemotePeers([]); setRecvConnection('closed'); setCameraState('연결 종료'); setMicState('연결 종료');
     setState(s => ({ ...s, phase: 'idle', activeMediaRoomId: '', connection: 'closed', producers: [], error: event.reason }));
   }), [session.onMediaClosed, dispose]);
   const refreshRemote = useCallback((attempt: Attempt) => {
     if (current.current !== attempt || !mounted.current) return;
     setRemoteTracks([...attempt.consumers.values()].map(({ consumer, participantId }) => ({ participantId, producerId: consumer.producerId, consumerId: consumer.id, kind: consumer.kind, track: consumer.track })));
   }, []);
+  const applyPeers = useCallback((attempt: Attempt, snapshot: Record<string, unknown>) => {
+    if (current.current !== attempt || !validPeerSnapshot(snapshot) || (snapshot.revision as number) < attempt.peersRevision) return;
+    attempt.peersRevision = snapshot.revision as number; attempt.peers = snapshot.peers as MediaPeer[];
+    for (const { consumer, participantId } of attempt.consumers.values()) if (consumer.kind === 'audio') {
+      if (attempt.peers.find(p => p.participantId === participantId)?.muted) consumer.pause(); else consumer.resume();
+    }
+    setRemotePeers(attempt.peers);
+  }, []);
   useEffect(() => session.onMediaEvent(event => {
     const attempt = current.current;
     if (!attempt || attempt.mediaId !== event.mediaId || attempt.roomId !== event.roomId) return;
+    if (event.type === 'media.peers') { applyPeers(attempt, event); return; }
     if (event.type === 'media.producer.added') {
       attempt.discovered.set(event.producer.producerId, event.producer); attempt.subscribe?.(event.producer);
     } else {
@@ -71,6 +97,8 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
         if (event.producer.participantId === session.selfId) {
           const producer = attempt.producers.find(p => p.id === producerId); producer?.close();
           attempt.producers = attempt.producers.filter(p => p.id !== producerId);
+          if (event.producer.kind === 'video') setCameraState(localOwner.current.streamRef.current?.getVideoTracks().some(t => t.readyState === 'live') ? '미송신 · 로컬 획득' : '꺼짐');
+          else setMicState('미획득');
           setState(s => ({ ...s, producers: attempt.producers.map(p => ({ id: p.id, kind: p.kind })) }));
         }
       }
@@ -80,7 +108,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
       }
       refreshRemote(attempt);
     }
-  }), [session.onMediaEvent, session.selfId, refreshRemote]);
+  }), [session.onMediaEvent, session.selfId, refreshRemote, applyPeers]);
   useEffect(() => {
     const attempt = current.current;
     if (attempt && ((!attempt.receiveOnly && local.status !== 'ready') || session.status !== 'connected' || !Object.hasOwn(session.joinedRooms, attempt.roomId))) void stop().catch(() => {});
@@ -92,21 +120,28 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
       if (current.current) await stop();
       if (!mounted.current || (!receiveOnly && local.status !== 'ready') || !Object.hasOwn(session.joinedRooms, roomId)) throw new Error('대상 방 참여와 송신 시 로컬 미디어가 필요합니다.');
       const tracks = receiveOnly ? [] : local.streamRef.current?.getTracks().filter(t => t.readyState === 'live') ?? [];
-      if (!receiveOnly && !tracks.length) throw new Error('송신할 로컬 트랙이 없습니다.');
-      const attempt: Attempt = { roomId, mediaId: crypto.randomUUID(), producers: [], receiveOnly, consumers: new Map(), discovered: new Map(), removed: new Set(), closedConsumers: new Set(), pending: new Set(), listing: true };
+      if (!receiveOnly && !tracks.length && !(cameraDisabled.current && local.streamRef.current)) throw new Error('송신할 로컬 트랙이 없습니다.');
+      const attempt: Attempt = { roomId, mediaId: crypto.randomUUID(), producers: [], receiveOnly, consumers: new Map(), discovered: new Map(), removed: new Set(), closedConsumers: new Set(), pending: new Set(), listing: true, peersRevision: -1, peers: [] };
       current.current = attempt;
       const check = () => { if (current.current !== attempt || !mounted.current) throw new Error('취소된 송신 요청'); };
       const call = async (action: Parameters<typeof rpc>[0], payload: Record<string, unknown> = {}) => {
         check(); const result = await rpc(action, roomId, attempt.mediaId, payload); check(); return result.data;
       };
+      let sendQueue = Promise.resolve();
+      attempt.send = (action, payload = {}) => {
+        const task = sendQueue.then(() => call(action, payload));
+        sendQueue = task.then(() => {}, () => {}); return task;
+      };
       setState({ phase: 'connecting', activeMediaRoomId: roomId, mediaId: attempt.mediaId, transportId: '', connection: 'new', error: '', producers: [] });
       setRemoteTracks([]); setRecvConnection('new');
+      setRemotePeers([]); setControlError(''); setCameraState(tracks.some(t => t.kind === 'video') ? '연결 중' : cameraDisabled.current ? '꺼짐' : '미획득'); setMicState(tracks.some(t => t.kind === 'audio') ? (mutedIntent.current ? '음소거됨' : '연결 중') : '미획득');
       attempt.timer = setTimeout(() => {
         if (current.current === attempt) void stop().catch(() => {}).finally(() => { if (mounted.current && !current.current) setState(s => ({ ...s, phase: 'error', error: 'ICE/DTLS 연결 시간이 초과됐습니다.' })); });
       }, 15000);
       try {
         const capabilities = (await call('capabilities')).capabilities as RtpCapabilities;
         const device = new Device();
+        attempt.device = device;
         await device.load({ routerRtpCapabilities: capabilities }); check();
         for (const track of tracks) if (!device.canProduce(track.kind as 'audio' | 'video')) throw new Error('지원하지 않는 트랙 종류입니다.');
         if (receiveOnly) {
@@ -116,8 +151,8 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
         const options = await call('create');
         const transport = device.createSendTransport(options as TransportOptions); attempt.transport = transport;
         setState(s => ({ ...s, transportId: transport.id }));
-        transport.on('connect', ({ dtlsParameters }, callback, errback) => { void call('connect', { transportId: transport.id, dtlsParameters }).then(() => callback(), errback); });
-        transport.on('produce', ({ kind, rtpParameters }, callback, errback) => { void call('produce', { transportId: transport.id, kind, rtpParameters }).then(data => callback({ id: data.producerId as string }), errback); });
+        transport.on('connect', ({ dtlsParameters }, callback, errback) => { void attempt.send!('connect', { transportId: transport.id, dtlsParameters }).then(() => callback(), errback); });
+        transport.on('produce', ({ kind, rtpParameters }, callback, errback) => { void attempt.send!('produce', { transportId: transport.id, kind, rtpParameters, ...(kind === 'audio' ? { paused: mutedIntent.current } : {}) }).then(data => callback({ id: data.producerId as string }), errback); });
         transport.on('connectionstatechange', connection => {
           if (current.current !== attempt) return;
           setState(s => ({ ...s, connection, phase: connection === 'connected' ? 'sending' : s.phase }));
@@ -127,12 +162,16 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
         await setupReceiver(); check();
         for (const track of tracks) {
           check();
-          const producer = await transport.produce({ track, stopTracks: false, codec: device.rtpCapabilities.codecs?.find(c => c.mimeType.toLowerCase() === (track.kind === 'audio' ? 'audio/opus' : 'video/vp8')) });
+          if (track.kind === 'audio' && mutedIntent.current) track.enabled = false;
+          const producer = await transport.produce({ track, stopTracks: false, zeroRtpOnPause: true, codec: device.rtpCapabilities.codecs?.find(c => c.mimeType.toLowerCase() === (track.kind === 'audio' ? 'audio/opus' : 'video/vp8')) });
           if (current.current !== attempt) { producer.close(); check(); }
           attempt.producers.push(producer);
+          if (track.kind === 'audio') { if (mutedIntent.current) producer.pause(); setMicState(mutedIntent.current ? '음소거됨' : '송신 중'); }
+          else { cameraDisabled.current = false; setCameraState('송신 중'); }
           producer.on('trackended', () => { if (current.current === attempt) void stop().catch(() => {}); });
           setState(s => ({ ...s, producers: attempt.producers.map(p => ({ id: p.id, kind: p.kind })) }));
         }
+        if (!tracks.length) { clearTimeout(attempt.timer); setState(s => ({ ...s, phase: 'ready' })); }
         async function setupReceiver() {
           const recvOptions = await call('receive');
           const recv = device.createRecvTransport(recvOptions as TransportOptions); attempt.recv = recv;
@@ -162,6 +201,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
                 consumer = await recv.consume(data as unknown as ConsumerOptions); check();
                 if (attempt.removed.has(producerId) || attempt.closedConsumers.has(consumer.id)) throw new Error('종료된 원격 Consumer');
                 attempt.consumers.set(producerId, { consumer, participantId: descriptor.participantId });
+                if (consumer.kind === 'audio' && (attempt.peers.find(p => p.participantId === descriptor.participantId)?.muted || data.producerPaused === true)) consumer.pause();
                 await call('consumer.resume', { consumerId: consumer.id }); check();
                 refreshRemote(attempt);
               } catch (error) {
@@ -172,6 +212,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
             }).catch(() => {}).finally(() => { pending.delete(producerId); releaseTombstones(); });
           };
           const initial = await call('producers');
+          applyPeers(attempt, initial);
           for (const descriptor of initial.producers as RemoteProducer[]) if (!attempt.removed.has(descriptor.producerId)) attempt.discovered.set(descriptor.producerId, descriptor);
           for (const descriptor of attempt.discovered.values()) attempt.subscribe(descriptor);
           attempt.listing = false; releaseTombstones();
@@ -192,12 +233,12 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
       busy = true;
       void (async () => {
         const server = await rpc('stats', attempt.roomId, attempt.mediaId);
-        const browser = [] as { id: string; kind: string; packetsSent: number; bytesSent: number }[];
+        const browser = [] as { id: string; kind: string; packetsSent: number; bytesSent: number; paused: boolean; trackEnabled: boolean; trackState: string }[];
         for (const producer of attempt.producers) {
           const report = await producer.getStats().catch(error => { if (producer.closed) return null; throw error; });
           let packetsSent = 0, bytesSent = 0;
           report?.forEach(stat => { if (stat.type === 'outbound-rtp' && !stat.isRemote) { packetsSent += stat.packetsSent ?? 0; bytesSent += stat.bytesSent ?? 0; } });
-          if (!producer.closed) browser.push({ id: producer.id, kind: producer.kind, packetsSent, bytesSent });
+          if (!producer.closed) browser.push({ id: producer.id, kind: producer.kind, packetsSent, bytesSent, paused: producer.paused, trackEnabled: producer.track?.enabled ?? false, trackState: producer.track?.readyState ?? 'ended' });
         }
         const received = [] as { id: string; producerId: string; kind: string; packetsReceived: number; bytesReceived: number; framesDecoded: number }[];
         for (const { consumer } of attempt.consumers.values()) {
@@ -213,5 +254,65 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
     }, 1000);
     return () => clearInterval(timer);
   }, [rpc, stop]);
-  return { ...state, stats, remoteTracks, recvConnection, start, stop };
+  async function setMicrophoneMuted(next: boolean) {
+    const attempt = current.current;
+    if (!attempt?.send || micBusy.current || attempt.receiveOnly) return;
+    const producer = attempt.producers.find(p => p.kind === 'audio' && !p.closed);
+    if (!producer || producer.track?.readyState !== 'live') { setMicState('오류'); setControlError('송신 중인 live 마이크가 없습니다. 로컬 미디어 선택·연결을 다시 확인해주세요.'); return; }
+    micBusy.current = true; setControlError(''); setMicState(next ? '음소거 처리 중' : '음소거 해제 중');
+    // Disable locally first, and never re-enable until the server confirms resume.
+    producer.pause(); mutedIntent.current = true; setMuted(true);
+    try {
+      const result = await attempt.send(next ? 'producer.pause' : 'producer.resume', { transportId: attempt.transport!.id, producerId: producer.id });
+      if (current.current !== attempt) return;
+      if (producer.closed || producer.track?.readyState !== 'live' || result.paused !== next) throw new Error('마이크 상태가 변경되었습니다.');
+      if (!next) { producer.resume(); mutedIntent.current = false; setMuted(false); }
+      setMicState(next ? '음소거됨' : '송신 중');
+    } catch (error) { if (current.current === attempt) { setMicState('오류'); setControlError('서버 마이크 상태 확인 실패. 로컬 음소거를 유지합니다: ' + String(error)); } }
+    finally { micBusy.current = false; }
+  }
+  async function cameraOff() {
+    const attempt = current.current;
+    if (!attempt?.send || attempt.receiveOnly || cameraOffBusy.current) return;
+    cameraOffBusy.current = true;
+    cameraDisabled.current = true;
+    cameraEpoch.current++;
+    const producer = attempt.producers.find(p => p.kind === 'video' && !p.closed);
+    producer?.close(); attempt.producers = attempt.producers.filter(p => p !== producer);
+    localOwner.current.dropVideo(); setCameraState('끄는 중');
+    setState(s => ({ ...s, producers: attempt.producers.map(p => ({ id: p.id, kind: p.kind })) }));
+    try {
+      if (producer) await attempt.send('producer.close', { transportId: attempt.transport!.id, producerId: producer.id });
+      if (current.current === attempt) setCameraState('꺼짐');
+    } catch (error) { if (current.current === attempt) { setControlError('카메라 종료 확인 실패: ' + String(error)); await stop().catch(() => {}); } }
+    finally { cameraOffBusy.current = false; }
+  }
+  async function cameraOn() {
+    const attempt = current.current;
+    if (!attempt?.send || !attempt.transport || !attempt.device || attempt.receiveOnly || cameraBusy.current || localOwner.current.cameraPending || attempt.producers.some(p => p.kind === 'video')) return;
+    const epoch = ++cameraEpoch.current;
+    const valid = () => current.current === attempt && epoch === cameraEpoch.current;
+    cameraBusy.current = true; setCameraState('다시 켜는 중'); setControlError('');
+    let track: MediaStreamTrack | undefined;
+    try {
+      track = localOwner.current.streamRef.current?.getVideoTracks().find(t => t.readyState === 'live') ?? await localOwner.current.acquireVideo(valid);
+      if (!valid()) throw new Error('취소된 카메라 요청');
+      attempt.cameraTrack = track;
+      const producer = await attempt.transport.produce({ track, stopTracks: false, codec: attempt.device.rtpCapabilities.codecs?.find(c => c.mimeType.toLowerCase() === 'video/vp8') });
+      if (!valid()) {
+        producer.close();
+        if (current.current === attempt) await attempt.send('producer.close', { transportId: attempt.transport.id, producerId: producer.id });
+        throw new Error('취소된 Video Producer');
+      }
+      attempt.producers.push(producer); attempt.cameraTrack = undefined;
+      cameraDisabled.current = false;
+      producer.on('trackended', () => { if (current.current === attempt) void cameraOff(); });
+      setCameraState('송신 중'); setState(s => ({ ...s, producers: attempt.producers.map(p => ({ id: p.id, kind: p.kind })) }));
+    } catch (error) {
+      if (track) localOwner.current.dropVideo(track);
+      if (valid()) { setCameraState('실패'); setControlError(mediaErrorMessage(error)); }
+    } finally { attempt.cameraTrack = undefined; cameraBusy.current = false; }
+  }
+  return { ...state, stats, remoteTracks, remotePeers, recvConnection, cameraState, micState, muted, controlError,
+    canSend: !!current.current?.transport && !current.current.receiveOnly && (state.phase === 'sending' || state.phase === 'ready'), hasMicrophone: !!current.current?.producers.some(p => p.kind === 'audio' && !p.closed), cameraOn, cameraOff, setMicrophoneMuted, start, stop };
 }

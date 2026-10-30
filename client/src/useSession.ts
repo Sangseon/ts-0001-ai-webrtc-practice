@@ -96,7 +96,7 @@ export function useSession() {
         }
         if (value.kind === 'event') {
           if (value.type === 'media.closed') { for (const listener of mediaListeners.current) listener(value); return; }
-          if (value.type === 'media.producer.added' || value.type === 'media.producer.removed' || value.type === 'media.consumer.closed') { for (const listener of remoteListeners.current) listener(value); return; }
+          if (value.type === 'media.producer.added' || value.type === 'media.producer.removed' || value.type === 'media.consumer.closed' || value.type === 'media.peers') { for (const listener of remoteListeners.current) listener(value); return; }
           if (value.type === 'session.ready') {
             setSelfId(value.selfId);
             setParticipants(value.participants);

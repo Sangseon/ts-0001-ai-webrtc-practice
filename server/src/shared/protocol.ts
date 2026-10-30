@@ -115,6 +115,7 @@ export function isServerMessage(value: unknown): value is ServerMessage {
       case 'media.closed': return identifier(value.roomId) && identifier(value.mediaId) && typeof value.reason === 'string';
       case 'media.producer.added':
       case 'media.producer.removed':
+      case 'media.peers':
       case 'media.consumer.closed': return validMediaEvent(value);
       case 'session.ready': return validId(value.selfId) && Array.isArray(value.participants) && value.participants.every(isParticipant);
       case 'chat.message': {

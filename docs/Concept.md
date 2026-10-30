@@ -58,6 +58,8 @@ TypeScript와 WebRTC를 이용한 **다자간 화상·음성 회의 웹 애플�
 - 마이크 테스트: 선택한 마이크의 입력 음량 레벨을 화면에서 확인
 - 브라우저 장치 권한 거부 또는 장치 연결 해제 시 안내
 
+Step 10의 카메라 OFF는 Video Producer와 카메라 트랙을 종료하며, ON은 기본 카메라만 재획득해 기존 Send Transport에 새 원본을 만든다. 마이크는 기존 Audio Producer를 pause/resume하고 로컬 enabled 상태를 맞춘다. 방 전환 시 카메라 OFF·음소거 의도를 유지하며 명시적 해제 없이 오디오를 다시 송신하지 않는다. 수신 전용의 해제 버튼으로 장치를 자동 획득하지 않는다.
+
 ## 3. WebRTC의 두 가지 통신 구조
 
 다자간 WebRTC 통신에는 대표적으로 **Mesh(P2P)** 방식과 **SFU(Selective Forwarding Unit)** 방식이 있다.
