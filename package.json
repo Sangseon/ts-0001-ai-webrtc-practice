@@ -23,10 +23,13 @@
     "test:sfu": "npm run build:server && node --test scripts/sfu.test.cjs",
     "test:ws": "npm run build:server && node --test scripts/ws.test.cjs",
     "test:media": "node --import tsx --test scripts/media.test.cjs",
-    "test:media:browser": "node scripts/media.browser.cjs"
+    "test:media:browser": "node scripts/media.browser.cjs",
+    "test:sfu:ws": "npm run build:server && node --test scripts/sfu-ws.test.cjs",
+    "test:sfu:browser": "node scripts/sfu.browser.cjs"
   },
   "dependencies": {
     "mediasoup": "3.32.0",
+    "mediasoup-client": "3.25.3",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "ws": "8.22.0"

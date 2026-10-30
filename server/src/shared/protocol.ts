@@ -1,3 +1,5 @@
+import { identifier, validMediaRequest, validMediaResponse } from './mediaProtocol.js';
+import type { MediaRequest, MediaResponse, MediaClosed } from './mediaProtocol.js';
 export const avatars = [
   { id: 'bear', label: '곰', emoji: '🐻' },
   { id: 'cat', label: '고양이', emoji: '🐱' },
@@ -19,10 +21,11 @@ export type RoomRequest =
 export type ChatTarget = { scope: 'global' } | { scope: 'room'; roomId: string };
 export type ChatRequest = { kind: 'request'; type: 'chat.send'; requestId: string; body: string } & ChatTarget;
 export type ChatMessage = { messageId: string; participantId: string; body: string; sentAt: string } & ChatTarget;
-export type ClientRequest = ProfileRequest | RoomRequest | ChatRequest;
+export type ClientRequest = ProfileRequest | RoomRequest | ChatRequest | MediaRequest;
 export type ErrorCode = 'INVALID_JSON' | 'INVALID_MESSAGE' | 'UNKNOWN_TYPE' | 'INVALID_PROFILE'
-  | 'INVALID_ROOM_NAME' | 'ROOM_NOT_FOUND' | 'ALREADY_JOINED' | 'NOT_JOINED' | 'INVALID_CHAT';
+  | 'INVALID_ROOM_NAME' | 'ROOM_NOT_FOUND' | 'ALREADY_JOINED' | 'NOT_JOINED' | 'INVALID_CHAT' | 'MEDIA_ERROR';
 export type ServerMessage =
+  | MediaResponse | MediaClosed
   | ({ kind: 'response'; type: 'chat.send'; requestId: string; ok: true; messageId: string } & ChatTarget)
   | { kind: 'event'; type: 'chat.message'; message: ChatMessage }
   | { kind: 'event'; type: 'session.ready'; selfId: string; participants: Participant[] }
@@ -40,7 +43,7 @@ export const roomNameMaxLength = 40;
 export const chatMaxLength = 500;
 export const chatChannelLimit = 100;
 export const chatTotalLimit = 500;
-const errorCodes: ErrorCode[] = ['INVALID_JSON', 'INVALID_MESSAGE', 'UNKNOWN_TYPE', 'INVALID_PROFILE', 'INVALID_ROOM_NAME', 'ROOM_NOT_FOUND', 'ALREADY_JOINED', 'NOT_JOINED', 'INVALID_CHAT'];
+const errorCodes: ErrorCode[] = ['INVALID_JSON', 'INVALID_MESSAGE', 'UNKNOWN_TYPE', 'INVALID_PROFILE', 'INVALID_ROOM_NAME', 'ROOM_NOT_FOUND', 'ALREADY_JOINED', 'NOT_JOINED', 'INVALID_CHAT', 'MEDIA_ERROR'];
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, allowed: string[]) =>
@@ -70,6 +73,7 @@ export function parseRequest(text: string): ClientRequest | Extract<ServerMessag
   if (!record(value)) return fail('INVALID_MESSAGE', '요청 객체가 필요합니다.');
   const requestId = validId(value.requestId) ? value.requestId : null;
   if (value.kind !== 'request' || !requestId || typeof value.type !== 'string') return fail('INVALID_MESSAGE', '요청 종류와 requestId를 확인해주세요.', requestId);
+  if (value.type === 'media.request') return validMediaRequest(value) ? value : fail('INVALID_MESSAGE', '미디어 요청 필드·DTLS/RTP 파라미터를 확인해주세요.', requestId);
   if (value.type === 'chat.send') {
     const fields = value.scope === 'global' ? ['kind', 'type', 'requestId', 'scope', 'body'] : ['kind', 'type', 'requestId', 'scope', 'roomId', 'body'];
     if (!keys(value, fields) || (value.scope !== 'global' && value.scope !== 'room') || (value.scope === 'room' && !validId(value.roomId))) return fail('INVALID_MESSAGE', '채팅 범위와 대상 방, 요청 필드를 확인해주세요.', requestId);
@@ -108,6 +112,7 @@ export function isServerMessage(value: unknown): value is ServerMessage {
   if (!record(value)) return false;
   if (value.kind === 'event') {
     switch (value.type) {
+      case 'media.closed': return identifier(value.roomId) && identifier(value.mediaId) && typeof value.reason === 'string';
       case 'session.ready': return validId(value.selfId) && Array.isArray(value.participants) && value.participants.every(isParticipant);
       case 'chat.message': {
         const m = value.message;
@@ -124,6 +129,7 @@ export function isServerMessage(value: unknown): value is ServerMessage {
     }
   }
   if (value.kind !== 'response') return false;
+  if (value.type === 'media.result') return validMediaResponse(value);
   if (value.type === 'chat.send') return value.ok === true && validId(value.requestId) && validId(value.messageId)
     && ((value.scope === 'global' && keys(value, ['kind', 'type', 'requestId', 'ok', 'messageId', 'scope']))
       || (value.scope === 'room' && validId(value.roomId) && keys(value, ['kind', 'type', 'requestId', 'ok', 'messageId', 'scope', 'roomId'])));

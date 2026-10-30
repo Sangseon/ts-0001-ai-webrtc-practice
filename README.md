@@ -7,6 +7,7 @@ TypeScript와 Codex를 활용해 SFU 기반 다자간 화상회의를 단계별�
 WebSocket 제어 메시지와 WebRTC 미디어 전송의 역할, 참가자 상태와 미디어 자원의 관리 방식을 학습한다.
 현재는 TypeScript 실행 기반, SFU worker·Router 실행 검증, WebSocket 세션·프로필 동기화, 논리적 다중 회의방과 전체·회의방 채팅까지 구현했다.
 로컬 카메라·마이크 획득과 미리보기도 구현해 Chrome·Edge 가상 장치로 검증했다. 물리 장치 인수 검증은 남아 있다.
+SFU 단일 활성 회의방 송신도 구현했으며, Chrome·Edge 가상 장치에서 실제 ICE/DTLS 연결과 RTP 통계 증가를 확인했다.
 
 Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai-webrtc-practice`다.
 
@@ -35,6 +36,7 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 | 클라이언트 | React 19.3.1, Vite 8.3.5 |
 | 서버 | Node.js 24.22.1, 기본 HTTP 모듈, ws 8.22.0 |
 | SFU 실행 검증 | mediasoup 3.32.0 |
+| 브라우저 SFU 송신 | mediasoup-client 3.25.3 |
 
 ## Scope
 
@@ -44,14 +46,15 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 | SFU 실행 검증 | worker·Router 생성·종료, Opus·VP8 설정, 반복 실행·오류 정리 | 완료 (Step 02) |
 | 세션·프로필 | WebSocket 접속자 목록, 닉네임·고정 아바타 변경·동기화 | 완료 (Step 03) |
 | 회의방 | 생성·자동 입장·다중 참여·방별 퇴장·참가자 목록·빈 방 삭제 | 완료 (Step 04) |
-| 미디어 | SFU 기반 다자간 영상·음성 송수신 | 구현 예정 |
+| SFU 송신 | 단일 활성 방, 오디오·비디오 송신·전환·자원 정리 | 완료 (Step 07, 가상 장치 검증) |
+| 미디어 수신 | SFU 기반 원격 영상·음성 수신 | 구현 예정 (Step 08 이후) |
 | 채팅 | 전체·방별 전달, 프로필 연동, 브라우저 메모리 내역 | 완료 (Step 05) |
 | 로컬 미디어 | 카메라만·마이크만·두 종류 선택 획득, 음소거 미리보기, 트랙 종료 | 구현·가상 검증, 물리 검증 대기 (Step 06) |
-| Signaling | 미디어 연결 제어 | 구현 예정 |
+| Signaling | capabilities·Send Transport·Producer·통계·종료 | 송신 범위 완료 (Step 07) |
 | 장치 설정 | 카메라·마이크 제어, 장치 선택, 마이크 테스트 | 구현 예정 |
 
-실제 WebRTC 송수신은 아직 구현·검증하지 않았다.
-다중 회의방 소속은 논리적 참여 정책이며, 동시 미디어 송수신 정책은 이후 Step에서 결정한다.
+실제 SFU RTP 송신은 루프백·가상 장치에서 검증했으며 원격 수신은 아직 구현하지 않았다.
+다중 회의방 소속·채팅은 유지하고 실제 송신은 참가자당 한 방으로 제한한다. 회의방 목록·채팅 화면 선택만으로 송신 대상이 바뀌지 않는다.
 인증·DB·녹화·화면 공유는 초기 필수 범위에서 제외한다.
 
 ## Implementation
@@ -60,12 +63,14 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 
 - `client/`: 연결 상태·프로필·전체 접속자·다중 회의방·채팅 UI를 표시한다. 화면 선택과 실제 소속을 구분한다. `Chat.tsx`는 채팅 화면, `useSession.ts`는 단일 연결과 제한된 내역·공통 작성자 표시 정보를 관리한다.
 - `client/src/LocalMedia.tsx`, `useLocalMedia.ts`: WebSocket 상태와 독립적으로 사용자 클릭에 따른 로컬 미디어 획득·재생·종료를 관리한다.
+- `client/src/MediaPanel.tsx`, `useSfuSender.ts`: 로컬 트랙을 재사용해 명시적으로 SFU 송신·전환·종료하고 통계를 표시한다.
+- `server/src/media.ts`: 지연 생성 단일 worker·방별 Router·참가자별 활성 송신 자원과 소유권을 관리한다.
 - `server/src/index.ts`: HTTP·WebSocket 서버 실행 진입점이다. 세션·프로필의 기준 상태는 서버 메모리에 둔다.
 - `server/src/shared/protocol.ts`: 양쪽의 메시지 타입·아바타 목록·런타임 검증을 공유한다.
 - `server/src/rooms.ts`: 방별 참가자 ID 집합을 소속의 기준 상태로 관리하고 프로필은 세션에서 참조한다.
 - `server/src/sfu-check.ts`: worker 하나와 Router 하나를 생성하고 종료하는 독립 검증 진입점이다.
 
-SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패나 worker 사망 시에도 자원을 정리한다.
+Step 02 독립 SFU 검증은 별도 실행한다. 실제 송신용 worker는 첫 Signaling 요청 때 기존 서버 안에서 지연 생성한다. Router 생성 실패나 worker 사망 시에도 자원을 정리한다.
 
 ### Documents
 
@@ -77,6 +82,7 @@ SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패
 - [Step 04](./docs/Step04.md) — 다중 회의방·참가자 동기화와 검증, 기존 회귀 이슈
 - [Step 05](./docs/Step05.md) — 전체·회의방 채팅, 메모리 내역과 실제 브라우저 검증
 - [Step 06](./docs/Step06.md) — 로컬 미디어 생명주기, 가상 장치 결과와 물리 장치 수동 확인 절차
+- [Step 07](./docs/Step07.md) — 단일 활성 SFU 송신·방 전환·실제 RTP 통계와 검증 한계
 - [ChatHistory](./docs/ChatHistory.md) — 기존 대화 자동 기록 사용 방법
 
 ## What I Learned
@@ -88,6 +94,7 @@ SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패
 - 방별 ID 집합으로 다중 소속을 표현하고, 한 방 퇴장과 연결 전체 종료의 정리 범위를 구분해 검증했다.
 - 같은 WebSocket에서 전체·방별 메시지의 수신 범위를 검증하고, 공통 프로필 변경이 기존 채팅 작성자 표시에도 반영되는지 확인했다.
 - 브라우저 가상 장치로 미리보기 종료·컴포넌트 해제·늦은 획득 응답의 트랙 정리와 video 참조 제거를 확인했다.
+- Producer 생성과 실제 RTP 송신을 구분해 브라우저 송신·SFU 수신 카운터 증가를 확인하고, stopTracks:false로 방 전환 시 로컬 트랙을 재사용했다.
 
 상세 검증 결과와 미검증 항목은 Step 문서에서 확인할 수 있다.
 
@@ -169,6 +176,15 @@ npm run test:media:browser  # Windows Chrome·Edge 가상 장치, 개발 서버�
 ```
 
 가상 장치 테스트는 별도 임시 브라우저 프로필을 만들고 종료 후 제거한다. 실제 카메라·마이크 하드웨어나 권한 대화상자 검증을 대신하지 않는다.
+
+SFU 송신은 로컬 미디어 획득·방 입장 후 별도 `미디어 대상 회의방`을 선택하고 `SFU 송신 시작`을 누른다. `선택한 방으로 미디어 전환`은 이전 송신을 종료한 뒤 새 방으로 연결한다. `SFU 송신 종료`는 로컬 트랙을 유지하며 `로컬 미디어 종료`는 송신도 정리한다. WebSocket 유실은 송신을 정리하지만 로컬 트랙은 별도 종료해야 한다.
+
+```powershell
+npm run test:sfu:ws       # 실제 native worker 기반 Signaling·소유권·경합 테스트
+npm run test:sfu:browser  # 개발 서버 종료 후 Chrome·Edge 가상 장치의 실제 RTP 검증
+```
+
+현재 미디어 주소는 127.0.0.1, UDP/TCP 포트 범위는 40000~40100이다. 다른 PC·LAN 배포는 검증하지 않았다. 물리 이어폰 마이크 송신 확인 절차는 Step 07 문서를 따른다.
 
 세션·프로필 규칙은 [Step 03 문서](./docs/Step03.md), 회의방 규칙과 브라우저 절차는 [Step 04 문서](./docs/Step04.md)를 참고한다.
 채팅 정책과 검증은 [Step 05 문서](./docs/Step05.md)를 따른다. 기존 초과 payload의 불필요한 강제 종료 경로는 별도 수정됐으며, 극단적 반복에서의 1006 관찰과 검증 한계는 [Step 03 후속 기록](./docs/Step03.md#2026-10-30-초과-payload-종료-경합-수정)에 남아 있다.

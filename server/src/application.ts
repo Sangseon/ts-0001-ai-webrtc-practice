@@ -4,6 +4,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { parseRequest } from './shared/protocol.js';
 import type { ChatMessage, Participant, ServerMessage } from './shared/protocol.js';
 import { createRoomStore } from './rooms.js';
+import { createMediaService } from './media.js';
 
 export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
   const server = createServer((request, response) => {
@@ -15,6 +16,10 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
   const sessions = new Map<WebSocket, { participant: Participant; alive: boolean }>();
   const rooms = createRoomStore();
   let closing = false;
+  const media = createMediaService(
+    (id, roomId) => !closing && [...sessions.values()].some(s => s.participant.participantId === id) && !!rooms.get(roomId)?.participantIds.has(id),
+    roomId => !!rooms.get(roomId),
+    (id, slot, reason) => { for (const [socket, session] of sessions) if (session.participant.participantId === id) send(socket, { kind: 'event', type: 'media.closed', roomId: slot.roomId, mediaId: slot.mediaId, reason }); });
 
   // ws forwards HTTP listen errors; consume them as well as the entrypoint's handler.
   wss.on('error', error => {
@@ -37,8 +42,10 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
     const session = sessions.get(socket);
     if (!session) return;
     const joined = rooms.joined(session.participant.participantId);
+    media.forget(session.participant.participantId);
     for (const roomId of joined) rooms.leave(roomId, session.participant.participantId);
     sessions.delete(socket);
+    media.prune();
     for (const roomId of joined) broadcastRoom(roomId);
     if (joined.length) broadcastRooms();
     broadcast({ kind: 'event', type: 'participant.left', participantId: session.participant.participantId });
@@ -78,6 +85,13 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
       }
       const request = parseRequest(data.toString());
       if (request.type === 'error') { send(socket, request); return; }
+      if (request.type === 'media.request') {
+        void media.handle(session.participant.participantId, request).then(data => {
+          if (sessions.get(socket) === session) send(socket, { kind: 'response', type: 'media.result', requestId: request.requestId, ok: true,
+            roomId: request.roomId, mediaId: request.mediaId, action: request.action, data });
+        }, error => send(socket, { kind: 'response', type: 'error', requestId: request.requestId, ok: false, code: 'MEDIA_ERROR', message: error instanceof Error ? error.message : 'SFU 요청 실패' }));
+        return;
+      }
       if (request.type === 'chat.send') {
         const room = request.scope === 'room' ? rooms.get(request.roomId) : undefined;
         if (request.scope === 'room' && (!room || !room.participantIds.has(session.participant.participantId))) {
@@ -113,6 +127,8 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
           }
         }
         if (request.type === 'room.leave') {
+          media.stop(session.participant.participantId, '활성 회의방 퇴장', roomId);
+          media.prune();
           send(socket, { kind: 'response', type: 'room.leave', requestId: request.requestId, ok: true, roomId });
         } else {
           send(socket, { kind: 'response', type: request.type, requestId: request.requestId, ok: true,
@@ -147,10 +163,11 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
       for (const socket of sessions.keys()) socket.terminate();
       sessions.clear();
       rooms.clear();
+      const mediaClosed = media.close();
       wss.close(() => {
         server.close(error => {
           if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') reject(error);
-          else resolve();
+          else void mediaClosed.then(resolve, reject);
         });
         server.closeIdleConnections();
       });

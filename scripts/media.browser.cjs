@@ -17,6 +17,12 @@ function child(exe, args) {
 }
 const instrumentation = `(() => {
   window.mediaProbe = { calls: 0, streams: [], mode: 'native', held: null, options: [] };
+  if (${process.env.CHECK_SFU === '1'}) {
+    const NativeWebSocket=window.WebSocket;
+    window.WebSocket=class extends NativeWebSocket {
+      constructor(...args){super(...args);if(String(args[0]).endsWith('/ws'))window.mediaProbe.socket=this;}
+    };
+  }
   const original = navigator.mediaDevices?.getUserMedia.bind(navigator.mediaDevices);
   if (!original) return;
   navigator.mediaDevices.getUserMedia = async options => {
@@ -203,8 +209,12 @@ async function unmountScenarios(b) {
   await until(async () => { try { return (await fetch('http://127.0.0.1:3000/health')).ok; } catch { return false; } }, 'HTTP');
   const chrome = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
   const edge = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
-  await virtual(chrome, 'Chrome'); await virtual(edge, 'Edge');
-  await mockScenarios(chrome); await unmountScenarios(chrome);
+  if (process.env.CHECK_SFU === '1') {
+    await require('./sfu-browser.scenarios.cjs')({ chrome, edge, until, click, selectMedia, waitState, ended });
+  } else {
+    await virtual(chrome, 'Chrome'); await virtual(edge, 'Edge');
+    await mockScenarios(chrome); await unmountScenarios(chrome);
+  }
   assert.equal(chrome.exceptions.length + edge.exceptions.length, 0);
   console.log('PASS browser runtime exceptions=0; physical devices and manual permission UI NOT tested');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {

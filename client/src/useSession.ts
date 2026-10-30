@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { MediaAction, MediaClosed, MediaResponse } from '../../server/src/shared/mediaProtocol.js';
 import { chatChannelLimit, chatTotalLimit, isServerMessage } from '../../server/src/shared/protocol.js';
 import type { ChatMessage, ChatTarget, Participant, Profile, ClientRequest, RoomSummary } from '../../server/src/shared/protocol.js';
 
@@ -18,6 +19,26 @@ export function useSession() {
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
+  const mediaPending = useRef(new Map<string, { action: MediaAction; roomId: string; mediaId: string; resolve: (value: MediaResponse) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>());
+  const mediaListeners = useRef(new Set<(event: MediaClosed) => void>());
+  function rejectMedia() {
+    for (const p of mediaPending.current.values()) { clearTimeout(p.timer); p.reject(new Error('WebSocket 연결이 종료됐습니다.')); }
+    mediaPending.current.clear();
+  }
+  const mediaRequest = useCallback((action: MediaAction, roomId: string, mediaId: string, payload: Record<string, unknown> = {}) => new Promise<MediaResponse>((resolve, reject) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) { reject(new Error('WebSocket 연결이 필요합니다.')); return; }
+    const requestId = crypto.randomUUID();
+    const text = JSON.stringify({ kind: 'request', type: 'media.request', requestId, action, roomId, mediaId, payload });
+    if (new TextEncoder().encode(text).length > 4096) { reject(new Error('Signaling 요청이 4096 bytes를 초과합니다.')); return; }
+    const timer = setTimeout(() => { mediaPending.current.delete(requestId); reject(new Error('SFU 요청 시간이 초과됐습니다. 연결을 종료합니다.')); socket.close(); }, 8000);
+    mediaPending.current.set(requestId, { action, roomId, mediaId, resolve, reject, timer });
+    try { socket.send(text); } catch { clearTimeout(timer); mediaPending.current.delete(requestId); reject(new Error('SFU 요청 전송 실패')); socket.close(); }
+  }), []);
+  const onMediaClosed = useCallback((listener: (event: MediaClosed) => void) => {
+    mediaListeners.current.add(listener);
+    return () => { mediaListeners.current.delete(listener); };
+  }, []);
   const pending = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null);
 
   useEffect(() => {
@@ -56,7 +77,21 @@ export function useSession() {
         let value: unknown;
         try { value = JSON.parse(event.data); } catch { setError('서버 JSON 응답을 읽을 수 없습니다.'); socket?.close(); return; }
         if (!isServerMessage(value)) { setError('서버 메시지 형식이 올바르지 않습니다.'); socket?.close(); return; }
+        if (value.kind === 'response') {
+          const p = value.requestId ? mediaPending.current.get(value.requestId) : undefined;
+          if (p) {
+            clearTimeout(p.timer); mediaPending.current.delete(value.requestId!);
+            if (value.type === 'media.result' && value.action === p.action && value.roomId === p.roomId && value.mediaId === p.mediaId) p.resolve(value);
+            else {
+              p.reject(new Error(value.type === 'error' ? value.message : '잘못된 SFU 응답'));
+              if (p.action === 'close') socket?.close();
+            }
+            return;
+          }
+          if (value.type === 'media.result') return;
+        }
         if (value.kind === 'event') {
+          if (value.type === 'media.closed') { for (const listener of mediaListeners.current) listener(value); return; }
           if (value.type === 'session.ready') {
             setSelfId(value.selfId);
             setParticipants(value.participants);
@@ -109,6 +144,7 @@ export function useSession() {
         if (!active) return;
         if (pending.current) setError('연결이 종료되어 변경 결과를 확인할 수 없습니다.');
         clearPending();
+        rejectMedia();
         socketRef.current = null;
         setStatus('disconnected');
         setSelfId(null);
@@ -123,6 +159,7 @@ export function useSession() {
     }, 0);
     return () => {
       active = false;
+      rejectMedia();
       clearTimeout(start);
       if (pending.current) clearTimeout(pending.current.timer);
       pending.current = null;
@@ -156,7 +193,7 @@ export function useSession() {
   }
 
   return {
-    status, selfId, participants, rooms, joinedRooms, selectedRoomId, setSelectedRoomId, error, notice, saving, messages, profiles,
+    status, selfId, participants, rooms, joinedRooms, selectedRoomId, setSelectedRoomId, error, notice, saving, messages, profiles, mediaRequest, onMediaClosed,
     sendChat: (target: ChatTarget, body: string) => sendRequest({ type: 'chat.send', ...target, body }),
     updateProfile: (profile: Profile) => sendRequest({ type: 'profile.update', profile }),
     createRoom: (name: string) => sendRequest({ type: 'room.create', name }),

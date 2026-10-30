@@ -3,6 +3,10 @@ import { useState } from 'react';
 
 export function LocalMedia() {
   const media = useLocalMedia();
+  return <LocalMediaControls media={media} />;
+}
+
+export function LocalMediaControls({ media, onStop }: { media: ReturnType<typeof useLocalMedia>; onStop?: () => void }) {
   const [selection, setSelection] = useState({ video: true, audio: true });
   const locked = media.pending || media.status === 'ready';
   const labels = { idle: '시작 전 / 종료됨', requesting: '선택한 미디어 권한 및 미리보기 준비 중', ready: '선택한 로컬 미디어 사용 중', stopping: '종료 요청됨 · 대기 중인 권한 요청의 결과를 기다립니다', error: '미디어 오류' };
@@ -17,7 +21,7 @@ export function LocalMedia() {
     {!selection.video && !selection.audio && <p>미디어를 요청하지 않습니다. 회의방과 채팅은 그대로 이용할 수 있습니다.</p>}
     <p data-testid="media-status" data-status={media.status}>{labels[media.status]}</p>
     <button id="media-start" disabled={locked || (!selection.video && !selection.audio)} onClick={() => void media.start(selection)}>로컬 미디어 시작</button>{' '}
-    <button id="media-stop" disabled={media.status !== 'ready' && media.status !== 'requesting'} onClick={media.stop}>로컬 미디어 종료</button>
+    <button id="media-stop" disabled={media.status !== 'ready' && media.status !== 'requesting'} onClick={onStop ?? media.stop}>로컬 미디어 종료</button>
     {media.error && <p role="alert" data-testid="media-error">{media.error}</p>}
     <video id="local-preview" ref={media.videoRef} hidden={!selection.video} muted autoPlay playsInline aria-label="내 카메라 미리보기" />
     {!selection.video && selection.audio && <p>마이크만 획득합니다. 영상 미리보기와 로컬 음성 재생은 하지 않습니다.</p>}

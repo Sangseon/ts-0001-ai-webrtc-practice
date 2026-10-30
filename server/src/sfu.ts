@@ -7,7 +7,7 @@ export const mediaCodecs: RouterRtpCodecCapability[] = [
   { kind: 'video', mimeType: 'video/VP8', clockRate: 90000 },
 ];
 
-async function closeWorker(worker: Worker) {
+export async function closeWorker(worker: Worker) {
   const closed = worker.subprocessClosed
     ? Promise.resolve()
     : once(worker, 'subprocessclose', { signal: AbortSignal.timeout(5000) });
