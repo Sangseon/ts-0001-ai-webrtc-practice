@@ -6,7 +6,7 @@ import type { ChatMessage, Participant, ServerMessage } from './shared/protocol.
 import { createRoomStore } from './rooms.js';
 import { createMediaService } from './media.js';
 
-export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
+export function createApplication({ heartbeatIntervalMs = 30000, inspectMedia = false } = {}) {
   const server = createServer((request, response) => {
     const healthy = request.method === 'GET' && request.url === '/health';
     response.writeHead(healthy ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -175,5 +175,9 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
     });
     return closePromise;
   }
-  return { server, close };
+  return { server, close, diagnostics: inspectMedia ? {
+    async snapshot() { return { sessions: sessions.size, rooms: rooms.list(), media: await media.diagnostics.snapshot() }; },
+    closeRouter: media.diagnostics.closeRouter,
+    closeTransport: media.diagnostics.closeTransport,
+  } : undefined };
 }

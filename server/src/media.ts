@@ -53,7 +53,7 @@ export function createMediaService(isMember: (participantId: string, roomId: str
   }
   function announce(owner: string, source: Slot, producer: Producer, type: 'media.producer.added' | 'media.producer.removed') {
     const descriptor: RemoteProducer = { producerId: producer.id, participantId: owner, kind: producer.kind };
-    for (const [id, slot] of active) if (id !== owner && slot.roomId === source.roomId) emit(id, { kind: 'event', type, roomId: slot.roomId, mediaId: slot.mediaId, producer: descriptor });
+    for (const [id, slot] of active) if ((id !== owner || type === 'media.producer.removed') && slot.roomId === source.roomId) emit(id, { kind: 'event', type, roomId: slot.roomId, mediaId: slot.mediaId, producer: descriptor });
   }
   function sourceFor(id: string, slot: Slot, producerId: string) {
     for (const [owner, source] of active) if (owner !== id && source.roomId === slot.roomId) {
@@ -232,7 +232,7 @@ export function createMediaService(isMember: (participantId: string, roomId: str
     if (action === 'producer.close') {
       const producer = slot.producers.get(payload.producerId as string);
       if (!producer) throw new Error('소유한 Producer가 아닙니다.');
-      stop(id, 'Producer 종료');
+      producer.close(); // A single source ending must preserve other kinds and reception.
       return { closed: true };
     }
     if (slot.busy) throw new Error('미디어 요청이 이미 처리 중입니다.');
@@ -279,5 +279,20 @@ export function createMediaService(isMember: (participantId: string, roomId: str
     })();
     return closePromise;
   }
-  return { handle, stop, prune, close, forget(id: string) { stop(id, '연결 종료'); retired.delete(id); } };
+  // In-process diagnostics only; never exposed as an HTTP/WS operation.
+  const diagnostics = {
+    async snapshot() {
+      const w = workerPromise ? await workerPromise.catch(() => null) : null;
+      const native = w && !w.closed ? await w.dump() : null;
+      const roomResources = await Promise.all([...routers].map(async ([roomId, entry]) => ({ roomId, dump: await (await entry.promise).dump() })));
+      const slots = [...active].map(([participantId, slot]) => ({ participantId, roomId: slot.roomId, mediaId: slot.mediaId,
+        sendTransportId: slot.transport?.id, recvTransportId: slot.recv?.id,
+        producers: [...slot.producers.values()].map(p => ({ id: p.id, kind: p.kind })),
+        consumers: [...slot.consumers.values()].map(c => ({ id: c.id, producerId: c.producerId, kind: c.kind })) }));
+      return { slots, roomResources, native, draining: draining.size, pending: tasks.size };
+    },
+    closeRouter(roomId: string) { routers.get(roomId)?.router?.close(); },
+    closeTransport(id: string) { active.get(id)?.recv?.close(); },
+  };
+  return { handle, stop, prune, close, diagnostics, forget(id: string) { stop(id, '연결 종료'); retired.delete(id); } };
 }

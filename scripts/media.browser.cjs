@@ -1,6 +1,6 @@
 // Windows Chrome/Edge integration check; only temporary browser profiles use fake devices.
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, fork } = require('node:child_process');
 const { mkdtemp, readFile, rm, realpath } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join, resolve, dirname } = require('node:path');
@@ -17,7 +17,7 @@ function child(exe, args) {
 }
 const instrumentation = `(() => {
   window.mediaProbe = { calls: 0, streams: [], mode: 'native', held: null, options: [] };
-  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1'}) {
+  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1' || process.env.CHECK_SFU_MULTI === '1'}) {
     const NativeWebSocket=window.WebSocket;
     window.WebSocket=class extends NativeWebSocket {
       constructor(...args){super(...args);if(String(args[0]).endsWith('/ws'))window.mediaProbe.socket=this;}
@@ -205,13 +205,24 @@ async function unmountScenarios(b) {
     try { await fetch(`http://127.0.0.1:${port}`); throw Error(`Port ${port} is already in use; stop the existing dev server first.`); }
     catch (error) { if (!error.cause) throw error; }
   }
-  child(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'watch', 'server/src/index.ts']);
+  let control;
+  if (process.env.CHECK_SFU_MULTI === '1') {
+    const server = fork(join(__dirname, 'sfu-multi-server.cjs'), [], { cwd: workspace, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    children.push(server); server.stdout.on('data', () => {}); server.stderr.on('data', data => process.stderr.write(data));
+    let seq=0; const pending=new Map();
+    server.on('message', message => { const p=pending.get(message.id); if(p){pending.delete(message.id);clearTimeout(p.timer);message.error?p.reject(Error(message.error)):p.resolve(message.result);} });
+    control = (action, fields={}) => new Promise((resolve,reject)=>{const id=++seq,timer=setTimeout(()=>{pending.delete(id);reject(Error('test IPC timeout'));},10000);pending.set(id,{resolve,reject,timer});server.send({id,action,...fields});});
+  } else child(process.execPath, ['node_modules/tsx/dist/cli.mjs', 'watch', 'server/src/index.ts']);
   child(process.execPath, ['node_modules/vite/bin/vite.js', '--config', 'client/vite.config.ts']);
   await until(async () => { try { return (await fetch('http://127.0.0.1:5173')).ok; } catch { return false; } }, 'Vite');
   await until(async () => { try { return (await fetch('http://127.0.0.1:3000/health')).ok; } catch { return false; } }, 'HTTP');
   const chrome = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
   const edge = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
-  if (process.env.CHECK_SFU_RECEIVE === '1') {
+  if (process.env.CHECK_SFU_MULTI === '1') {
+    const c = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
+    const d = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
+    await require('./sfu-multi.scenarios.cjs')({ pages: [chrome,edge,c,d], until, click, selectMedia, waitState, ended, control });
+  } else if (process.env.CHECK_SFU_RECEIVE === '1') {
     const killSfu = async () => {
       const { execFileSync } = require('node:child_process');
       const rows = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress'], { windowsHide: true, encoding: 'utf8' }));
@@ -228,7 +239,7 @@ async function unmountScenarios(b) {
     await virtual(chrome, 'Chrome'); await virtual(edge, 'Edge');
     await mockScenarios(chrome); await unmountScenarios(chrome);
   }
-  assert.equal(chrome.exceptions.length + edge.exceptions.length, 0);
+  assert.equal(browsers.reduce((n,b)=>n+b.exceptions.length,0), 0);
   console.log('PASS browser runtime exceptions=0; physical devices and manual permission UI NOT tested');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
   for (const b of browsers) { try { await b.call('Browser.close'); } catch {} b.ws.terminate(); }
@@ -237,6 +248,16 @@ async function unmountScenarios(b) {
       const killer = spawn('taskkill', ['/PID', String(p.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); killer.once('exit', resolve); killer.once('error', resolve);
     });
   }
+  // Chrome/Edge may hand the profile to a subprocess after the launcher exits.
+  // A closed page also loses its CDP Browser.close channel. Match only our exact
+  // temporary profile paths so that those handed-off processes cannot retain locks.
+  const {execFileSync}=require('node:child_process');
+  const ownedBrowsers=()=>JSON.parse(execFileSync('powershell.exe',['-NoProfile','-Command',
+    '$profiles=ConvertFrom-Json $env:CODEX_TEST_BROWSER_PROFILES; @(Get-CimInstance Win32_Process | Where-Object { $row=$_; ($row.Name -eq "chrome.exe" -or $row.Name -eq "msedge.exe") -and @($profiles | Where-Object { $row.CommandLine -and $row.CommandLine.Contains($_) }).Count -gt 0 } | Select-Object ProcessId) | ConvertTo-Json -Compress'],
+    {windowsHide:true,encoding:'utf8',env:{...process.env,CODEX_TEST_BROWSER_PROFILES:JSON.stringify(profiles)}}) || '[]');
+  const ownerList=()=>{const rows=ownedBrowsers();return Array.isArray(rows)?rows:rows?[rows]:[];};
+  for(const row of ownerList()) {try{execFileSync('taskkill',['/PID',String(row.ProcessId),'/T','/F'],{windowsHide:true,stdio:'ignore'});}catch{}}
+  await until(()=>ownerList().length===0,'owned browser subprocesses exit');
   const base = await realpath(tmpdir());
   for (const dir of profiles) {
     const target = await realpath(dir);

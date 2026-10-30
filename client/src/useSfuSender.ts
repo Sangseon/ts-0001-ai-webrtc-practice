@@ -7,7 +7,7 @@ import type { useLocalMedia } from './useLocalMedia';
 
 export type RemoteTrack = { participantId: string; producerId: string; consumerId: string; kind: 'audio' | 'video'; track: MediaStreamTrack };
 type Attempt = { mediaId: string; roomId: string; transport?: Transport; producers: Producer[]; timer?: ReturnType<typeof setTimeout>;
-  recv?: Transport; receiveOnly: boolean; consumers: Map<string, { consumer: Consumer; participantId: string }>; discovered: Map<string, RemoteProducer>; removed: Set<string>; closedConsumers: Set<string>; subscribe?: (producer: RemoteProducer) => void; recvTimer?: ReturnType<typeof setTimeout> };
+  recv?: Transport; receiveOnly: boolean; consumers: Map<string, { consumer: Consumer; participantId: string }>; discovered: Map<string, RemoteProducer>; removed: Set<string>; closedConsumers: Set<string>; pending: Set<string>; listing: boolean; subscribe?: (producer: RemoteProducer) => void; recvTimer?: ReturnType<typeof setTimeout> };
 export function useSfuSender(session: ReturnType<typeof useSession>, local: ReturnType<typeof useLocalMedia>) {
   const current = useRef<Attempt | null>(null);
   const mounted = useRef(false);
@@ -50,7 +50,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
   }, [dispose, rpc]);
   useEffect(() => session.onMediaClosed(event => {
     const attempt = current.current;
-    if (attempt?.mediaId !== event.mediaId) return;
+    if (attempt?.mediaId !== event.mediaId || attempt.roomId !== event.roomId) return;
     current.current = null; dispose(attempt); setStats({}); setRemoteTracks([]); setRecvConnection('closed');
     setState(s => ({ ...s, phase: 'idle', activeMediaRoomId: '', connection: 'closed', producers: [], error: event.reason }));
   }), [session.onMediaClosed, dispose]);
@@ -64,14 +64,23 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
     if (event.type === 'media.producer.added') {
       attempt.discovered.set(event.producer.producerId, event.producer); attempt.subscribe?.(event.producer);
     } else {
-      if (event.type === 'media.producer.removed') { attempt.removed.add(event.producer.producerId); attempt.discovered.delete(event.producer.producerId); }
-      else if (event.type === 'media.consumer.closed') attempt.closedConsumers.add(event.consumerId);
+      if (event.type === 'media.producer.removed') {
+        const producerId = event.producer.producerId;
+        if (attempt.listing || attempt.pending.has(producerId)) attempt.removed.add(producerId);
+        attempt.discovered.delete(producerId);
+        if (event.producer.participantId === session.selfId) {
+          const producer = attempt.producers.find(p => p.id === producerId); producer?.close();
+          attempt.producers = attempt.producers.filter(p => p.id !== producerId);
+          setState(s => ({ ...s, producers: attempt.producers.map(p => ({ id: p.id, kind: p.kind })) }));
+        }
+      }
+      else if (event.type === 'media.consumer.closed' && (attempt.listing || attempt.pending.size)) attempt.closedConsumers.add(event.consumerId);
       for (const [producerId, entry] of attempt.consumers) if (event.type === 'media.producer.removed' ? producerId === event.producer.producerId : event.type === 'media.consumer.closed' && entry.consumer.id === event.consumerId) {
         entry.consumer.close(); attempt.consumers.delete(producerId);
       }
       refreshRemote(attempt);
     }
-  }), [session.onMediaEvent, refreshRemote]);
+  }), [session.onMediaEvent, session.selfId, refreshRemote]);
   useEffect(() => {
     const attempt = current.current;
     if (attempt && ((!attempt.receiveOnly && local.status !== 'ready') || session.status !== 'connected' || !Object.hasOwn(session.joinedRooms, attempt.roomId))) void stop().catch(() => {});
@@ -84,7 +93,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
       if (!mounted.current || (!receiveOnly && local.status !== 'ready') || !Object.hasOwn(session.joinedRooms, roomId)) throw new Error('대상 방 참여와 송신 시 로컬 미디어가 필요합니다.');
       const tracks = receiveOnly ? [] : local.streamRef.current?.getTracks().filter(t => t.readyState === 'live') ?? [];
       if (!receiveOnly && !tracks.length) throw new Error('송신할 로컬 트랙이 없습니다.');
-      const attempt: Attempt = { roomId, mediaId: crypto.randomUUID(), producers: [], receiveOnly, consumers: new Map(), discovered: new Map(), removed: new Set(), closedConsumers: new Set() };
+      const attempt: Attempt = { roomId, mediaId: crypto.randomUUID(), producers: [], receiveOnly, consumers: new Map(), discovered: new Map(), removed: new Set(), closedConsumers: new Set(), pending: new Set(), listing: true };
       current.current = attempt;
       const check = () => { if (current.current !== attempt || !mounted.current) throw new Error('취소된 송신 요청'); };
       const call = async (action: Parameters<typeof rpc>[0], payload: Record<string, unknown> = {}) => {
@@ -134,7 +143,8 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
             if (connection === 'connected') clearTimeout(attempt.recvTimer);
             if (connection === 'failed' || connection === 'disconnected') void stop().catch(() => {});
           });
-          const pending = new Set<string>();
+          const pending = attempt.pending;
+          const releaseTombstones = () => { if (!attempt.listing && !pending.size) { attempt.removed.clear(); attempt.closedConsumers.clear(); } };
           let queue = Promise.resolve();
           attempt.subscribe = descriptor => {
             const producerId = descriptor.producerId;
@@ -159,11 +169,12 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
                 if (serverConsumerId && current.current === attempt) await call('consumer.close', { consumerId: serverConsumerId }).catch(() => {});
                 if (current.current === attempt && !attempt.removed.has(producerId)) setState(s => ({ ...s, error: '원격 미디어 수신 실패: ' + String(error) }));
               }
-            }).catch(() => {}).finally(() => { pending.delete(producerId); });
+            }).catch(() => {}).finally(() => { pending.delete(producerId); releaseTombstones(); });
           };
           const initial = await call('producers');
-          for (const descriptor of initial.producers as RemoteProducer[]) attempt.discovered.set(descriptor.producerId, descriptor);
+          for (const descriptor of initial.producers as RemoteProducer[]) if (!attempt.removed.has(descriptor.producerId)) attempt.discovered.set(descriptor.producerId, descriptor);
           for (const descriptor of attempt.discovered.values()) attempt.subscribe(descriptor);
+          attempt.listing = false; releaseTombstones();
         }
       } catch (error) {
         if (current.current === attempt) {
@@ -183,10 +194,10 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
         const server = await rpc('stats', attempt.roomId, attempt.mediaId);
         const browser = [] as { id: string; kind: string; packetsSent: number; bytesSent: number }[];
         for (const producer of attempt.producers) {
-          const report = await producer.getStats();
+          const report = await producer.getStats().catch(error => { if (producer.closed) return null; throw error; });
           let packetsSent = 0, bytesSent = 0;
-          report.forEach(stat => { if (stat.type === 'outbound-rtp' && !stat.isRemote) { packetsSent += stat.packetsSent ?? 0; bytesSent += stat.bytesSent ?? 0; } });
-          browser.push({ id: producer.id, kind: producer.kind, packetsSent, bytesSent });
+          report?.forEach(stat => { if (stat.type === 'outbound-rtp' && !stat.isRemote) { packetsSent += stat.packetsSent ?? 0; bytesSent += stat.bytesSent ?? 0; } });
+          if (!producer.closed) browser.push({ id: producer.id, kind: producer.kind, packetsSent, bytesSent });
         }
         const received = [] as { id: string; producerId: string; kind: string; packetsReceived: number; bytesReceived: number; framesDecoded: number }[];
         for (const { consumer } of attempt.consumers.values()) {

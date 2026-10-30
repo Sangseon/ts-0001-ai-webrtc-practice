@@ -13,7 +13,7 @@ export function MediaPanel({ session }: { session: ReturnType<typeof useSession>
   const selected = joined.some(r => r.roomId === target) ? target : '';
   return <>
     <LocalMediaControls media={local} onStop={() => { void sender.stop().catch(() => {}); local.stop(); }} />
-    <section aria-label="SFU 송신">
+    <section aria-label="SFU 송수신">
       <h2>SFU 미디어 송수신</h2>
       <p>방 목록·채팅 화면 선택과 독립적입니다. 한 번에 한 방으로만 송수신합니다.</p>
       <label htmlFor="sfu-room">미디어 대상 회의방</label>{' '}
@@ -28,6 +28,7 @@ export function MediaPanel({ session }: { session: ReturnType<typeof useSession>
       <p>활성 미디어 회의방: {sender.activeMediaRoomId || '없음'}</p>
       <p>Producer: {sender.producers.map(p => `${p.kind} (${p.id})`).join(', ') || '없음'}</p>
       <p data-testid="recv-state">Recv Transport: {sender.recvConnection}</p>
+      <p>원격 참가자 {new Set(sender.remoteTracks.map(track => track.participantId)).size}명 · 수신 트랙 {sender.remoteTracks.length}개 (논리 회의방 참가자 수와 별개)</p>
       {sender.error && <p role="alert">{sender.error}</p>}
       <pre data-testid="sfu-stats">{JSON.stringify(sender.stats, null, 2)}</pre>
       <RemoteMedia tracks={sender.remoteTracks} profiles={session.profiles} />

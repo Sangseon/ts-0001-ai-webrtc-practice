@@ -35,7 +35,7 @@ export function App() {
   const statusText = { connecting: '연결 중', connected: '연결됨', disconnected: '연결 종료' }[session.status];
   return (
     <main>
-      <p>Step 08 · SFU를 통한 2인 양방향 미디어</p>
+      <p>Step 09 · 동적 다자간 SFU 미디어</p>
       <h1>WebRTC Practice</h1>
       <p>연결 상태: <strong data-testid="connection-status">{statusText}</strong></p>
       <p>내 participantId: <code data-testid="self-id">{session.selfId ?? '없음'}</code></p>
