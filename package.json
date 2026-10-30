@@ -20,17 +20,20 @@
     "start:server": "node server/dist/index.js",
     "sfu:run": "tsx server/src/sfu-check.ts",
     "sfu:check": "tsx server/src/sfu-check.ts --once",
-    "test:sfu": "npm run build:server && node --test scripts/sfu.test.cjs"
+    "test:sfu": "npm run build:server && node --test scripts/sfu.test.cjs",
+    "test:ws": "npm run build:server && node --test scripts/ws.test.cjs"
   },
   "dependencies": {
     "mediasoup": "3.32.0",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@types/ws": "8.18.2",
     "@vitejs/plugin-react": "6.1.2",
     "tsx": "4.23.15",
     "typescript": "7.0.2",

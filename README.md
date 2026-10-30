@@ -5,7 +5,7 @@
 TypeScript와 Codex를 활용해 SFU 기반 다자간 화상회의를 단계별로 구현하는 실습 프로젝트다.
 
 WebSocket 제어 메시지와 WebRTC 미디어 전송의 역할, 참가자 상태와 미디어 자원의 관리 방식을 학습한다.
-현재는 TypeScript 실행 기반과 SFU worker·Router 실행 검증까지 완료했다.
+현재는 TypeScript 실행 기반, SFU worker·Router 실행 검증, WebSocket 세션·프로필 동기화까지 완료했다.
 
 Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai-webrtc-practice`다.
 
@@ -32,7 +32,7 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 | --- | --- |
 | 언어 | TypeScript 7.0.2, strict 모드 |
 | 클라이언트 | React 19.3.1, Vite 8.3.5 |
-| 서버 | Node.js 24.22.1, 기본 HTTP 모듈 |
+| 서버 | Node.js 24.22.1, 기본 HTTP 모듈, ws 8.22.0 |
 | SFU 실행 검증 | mediasoup 3.32.0 |
 
 ## Scope
@@ -41,9 +41,9 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 | --- | --- | --- |
 | 실행 기반 | React 기본 화면, HTTP 상태 확인, 개발 실행·타입 검사·빌드 | 완료 (Step 01) |
 | SFU 실행 검증 | worker·Router 생성·종료, Opus·VP8 설정, 반복 실행·오류 정리 | 완료 (Step 02) |
+| 세션·프로필 | WebSocket 접속자 목록, 닉네임·고정 아바타 변경·동기화 | 완료 (Step 03) |
 | 회의·미디어 | 회의방 생성·입장·퇴장, SFU 기반 다자간 영상·음성 송수신 | 구현 예정 |
-| Signaling·채팅 | WebSocket 연결 제어, 전체·회의방 채팅 | 구현 예정 |
-| 프로필 | 닉네임·캐릭터(프로필 아바타) 변경 | 구현 예정 |
+| Signaling·채팅 | 미디어 연결 제어, 전체·회의방 채팅 | 구현 예정 |
 | 장치 설정 | 카메라·마이크 제어, 장치 선택, 마이크 테스트 | 구현 예정 |
 
 실제 WebRTC 송수신은 아직 구현·검증하지 않았다.
@@ -53,8 +53,9 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 
 단일 npm 패키지에서 클라이언트와 서버를 구분하고, 공통 TypeScript strict 설정을 적용한다.
 
-- `client/`: React와 Vite로 기본 화면을 표시한다.
-- `server/src/index.ts`: Node.js 기본 HTTP 모듈로 `GET /health`를 제공한다.
+- `client/`: 연결 상태, 본인 ID, 프로필 폼과 접속자 목록을 표시한다.
+- `server/src/index.ts`: HTTP·WebSocket 서버 실행 진입점이다. 세션·프로필의 기준 상태는 서버 메모리에 둔다.
+- `server/src/shared/protocol.ts`: 양쪽의 메시지 타입·아바타 목록·런타임 검증을 공유한다.
 - `server/src/sfu-check.ts`: worker 하나와 Router 하나를 생성하고 종료하는 독립 검증 진입점이다.
 
 SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패나 worker 사망 시에도 자원을 정리한다.
@@ -65,6 +66,7 @@ SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패
 - [PLAN](./docs/PLAN.md) — Step별 구현 범위와 완료 기준
 - [Step 01](./docs/Step01.md) — 실행 방법, 기술 선택 및 검증 결과
 - [Step 02](./docs/Step02.md) — mediasoup 선택과 worker·Router 실행 검증
+- [Step 03](./docs/Step03.md) — WebSocket 세션·프로필 구현과 검증
 - [ChatHistory](./docs/ChatHistory.md) — 기존 대화 자동 기록 사용 방법
 
 ## What I Learned
@@ -72,6 +74,7 @@ SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패
 - Vite의 TypeScript 변환과 타입 검사를 구분하고, `tsc`로 클라이언트·서버를 별도 검사했다.
 - Windows x64 사전 빌드 worker를 실행해, Router가 worker 자식 프로세스 안에서 생성되는 구조를 확인했다.
 - 객체의 종료 상태와 자식 프로세스의 실제 종료를 각각 확인하고, 반복 실행·실패 상황에서 worker가 남지 않는지 검증했다.
+- 서버가 연결의 ID를 기준으로 프로필을 변경하고, 잘못된 요청과 연결 종료 후에도 다른 사용자의 상태를 유지하는지 확인했다.
 
 상세 검증 결과와 미검증 항목은 Step 문서에서 확인할 수 있다.
 
@@ -109,7 +112,11 @@ npm run dev:server
 ```
 
 각 터미널에서 `Ctrl+C`로 종료한다. 서버 상태 확인 응답은 `{"status":"ok"}`다.
-클라이언트는 서버 없이도 기본 화면이 열린다.
+서버 없이도 화면은 열리며 연결 오류가 표시된다.
+
+Chrome과 Edge에서 화면을 각각 열어 서로 다른 ID와 접속자 목록을 확인한다.
+닉네임·아바타를 변경하면 다른 화면에도 반영되며, 연결 종료 후 `다시 연결`하면 새 ID가 발급된다.
+클라이언트는 같은 호스트의 포트 3000 `/ws`에 연결한다.
 
 ### 타입 검사 및 빌드
 
@@ -127,6 +134,14 @@ npm run start:server
 
 빌드 화면은 `http://127.0.0.1:4173`에서 확인한다.
 개별 검사·빌드 명령과 문제 해결 방법은 [Step 01 문서](./docs/Step01.md)를 참고한다.
+
+WebSocket 통합 테스트:
+
+```powershell
+npm run test:ws
+```
+
+메시지 규칙과 브라우저 확인 절차는 [Step 03 문서](./docs/Step03.md)를 참고한다.
 
 ### SFU 실행 검증
 

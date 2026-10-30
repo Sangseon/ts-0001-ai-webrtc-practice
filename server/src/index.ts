@@ -1,22 +1,14 @@
-import { createServer } from 'node:http';
+import { createApplication } from './application.js';
 
 const host = '127.0.0.1';
 const port = 3000;
 
-const server = createServer((request, response) => {
-  if (request.method === 'GET' && request.url === '/health') {
-    response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    response.end(JSON.stringify({ status: 'ok' }));
-    return;
-  }
-
-  response.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-  response.end(JSON.stringify({ error: 'Not found' }));
-});
+const { server, close } = createApplication();
 
 server.on('error', (error: NodeJS.ErrnoException) => {
   console.error(`Server failed to start: ${error.code ?? error.message}`);
   process.exitCode = 1;
+  shutdown();
 });
 
 server.listen(port, host, () => {
@@ -24,13 +16,7 @@ server.listen(port, host, () => {
 });
 
 function shutdown() {
-  server.close((error) => {
-    if (error) {
-      console.error('Server failed to close.');
-      process.exitCode = 1;
-    }
-  });
-  server.closeIdleConnections();
+  void close().catch(() => { console.error('Server failed to close.'); process.exitCode = 1; });
 }
 
 process.once('SIGINT', shutdown);

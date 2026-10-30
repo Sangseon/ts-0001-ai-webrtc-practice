@@ -19,3 +19,31 @@ main {
 a {
   color: #1d4ed8;
 }
+
+form, section {
+  margin-block: 1.5rem;
+  padding: 1rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+}
+
+input, button {
+  font: inherit;
+}
+
+#nickname {
+  display: block;
+  margin-block: 0.5rem;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+fieldset { margin-block: 1rem; }
+.avatar-option { display: inline-block; margin-right: 1rem; }
+button { cursor: pointer; padding: 0.4rem 0.8rem; }
+button:disabled { cursor: default; }
+li { margin-block: 0.75rem; }
+li code { display: block; }
+code { overflow-wrap: anywhere; }
+[role="alert"] { color: #b91c1c; }
+[role="status"] { color: #166534; }
