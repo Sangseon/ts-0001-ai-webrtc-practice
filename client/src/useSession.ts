@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { isServerMessage } from '../../server/src/shared/protocol.js';
-import type { Participant, Profile, ProfileRequest } from '../../server/src/shared/protocol.js';
+import type { Participant, Profile, ClientRequest, RoomSummary } from '../../server/src/shared/protocol.js';
+
+type Command = { type: 'profile.update'; profile: Profile } | { type: 'room.create'; name: string } | { type: 'room.join' | 'room.leave'; roomId: string };
 
 export function useSession() {
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [selfId, setSelfId] = useState<string | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [joinedRooms, setJoinedRooms] = useState<Record<string, Participant[]>>({});
+  const [selectedRoomId, setSelectedRoomId] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
@@ -25,6 +30,9 @@ export function useSession() {
     setStatus('connecting');
     setSelfId(null);
     setParticipants([]);
+    setRooms([]);
+    setJoinedRooms({});
+    setSelectedRoomId('');
     setError('');
     setNotice('');
     // StrictMode's first setup is cleaned up before starting a network connection.
@@ -46,8 +54,15 @@ export function useSession() {
             setStatus('connected');
           } else if (value.type === 'participant.left') {
             setParticipants(current => current.filter(participant => participant.participantId !== value.participantId));
-          } else {
+          } else if (value.type === 'participant.joined' || value.type === 'participant.updated') {
             setParticipants(current => [...current.filter(participant => participant.participantId !== value.participant.participantId), value.participant]);
+          } else if (value.type === 'rooms.changed') {
+            setRooms(value.rooms);
+            const ids = new Set(value.rooms.map(room => room.roomId));
+            setJoinedRooms(current => Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id))));
+            setSelectedRoomId(current => ids.has(current) ? current : '');
+          } else if (value.type === 'room.state') {
+            setJoinedRooms(current => Object.hasOwn(current, value.roomId) ? { ...current, [value.roomId]: value.participants } : current);
           }
         } else if (value.type === 'error') {
           setError(value.message);
@@ -55,7 +70,15 @@ export function useSession() {
         } else if (value.requestId === pending.current?.id) {
           clearPending();
           setError('');
-          setNotice('프로필을 변경했습니다.');
+          if (value.type === 'profile.update') setNotice('프로필을 변경했습니다.');
+          else if (value.type === 'room.leave') {
+            setJoinedRooms(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== value.roomId)));
+            setNotice('선택한 회의방에서 퇴장했습니다.');
+          } else {
+            setJoinedRooms(current => ({ ...current, [value.room.roomId]: value.room.participants }));
+            setSelectedRoomId(value.room.roomId);
+            setNotice(value.type === 'room.create' ? '회의방을 생성하고 입장했습니다.' : '회의방에 입장했습니다.');
+          }
         }
       };
       socket.onerror = () => { if (active) setError('서버에 연결할 수 없습니다. 서버 실행 상태를 확인해주세요.'); };
@@ -67,6 +90,9 @@ export function useSession() {
         setStatus('disconnected');
         setSelfId(null);
         setParticipants([]);
+        setRooms([]);
+        setJoinedRooms({});
+        setSelectedRoomId('');
         setNotice('');
       };
     }, 0);
@@ -85,10 +111,10 @@ export function useSession() {
     };
   }, [attempt]);
 
-  function updateProfile(profile: Profile) {
+  function sendRequest(command: Command) {
     const socket = socketRef.current;
     if (status !== 'connected' || !socket || socket.readyState !== WebSocket.OPEN || pending.current) return;
-    const request: ProfileRequest = { kind: 'request', type: 'profile.update', requestId: crypto.randomUUID(), profile };
+    const request: ClientRequest = { kind: 'request', requestId: crypto.randomUUID(), ...command };
     setError('');
     setNotice('');
     setSaving(true);
@@ -99,13 +125,17 @@ export function useSession() {
     }, 8000) };
     try { socket.send(JSON.stringify(request)); } catch {
       clearPending();
-      setError('프로필 요청을 보내지 못했습니다.');
+      setError('요청을 보내지 못했습니다.');
       socket.close();
     }
   }
 
   return {
-    status, selfId, participants, error, notice, saving, updateProfile,
+    status, selfId, participants, rooms, joinedRooms, selectedRoomId, setSelectedRoomId, error, notice, saving,
+    updateProfile: (profile: Profile) => sendRequest({ type: 'profile.update', profile }),
+    createRoom: (name: string) => sendRequest({ type: 'room.create', name }),
+    joinRoom: (roomId: string) => sendRequest({ type: 'room.join', roomId }),
+    leaveRoom: (roomId: string) => sendRequest({ type: 'room.leave', roomId }),
     reconnect: () => { if (status === 'disconnected') { setSaving(false); setAttempt(value => value + 1); } },
     disconnect: () => socketRef.current?.close(),
   };

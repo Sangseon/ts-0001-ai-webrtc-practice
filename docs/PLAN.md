@@ -110,9 +110,9 @@ LiveKit의 SDK·방/트랙 개념은 [공식 소개](https://docs.livekit.io/tra
 | 12 | 마이크 입력 레벨 테스트 | 06, 11 |
 | 13 | 예외 상황과 전체 요구사항 통합 검증 | 05, 09, 10, 11, 12 |
 
-권장 실행 순서는 01 → 02 → … → 13이다. 03이나 06은 최소 선행 조건만 갖추면 따로 검증할 수 있지만, 이 표가 다음 Step의 자동 착수를 허용하지 않는다. Step 01~03은 **구현·검증 완료**이며, Step 04~13은 **미착수**다. 검증 범위와 환경 제약은 [Step01.md](./Step01.md), [Step02.md](./Step02.md), [Step03.md](./Step03.md)를 따른다. SFU는 mediasoup 3.32.0으로 선택했으며 실제 WebRTC 송수신은 아직 검증하지 않았다.
+권장 실행 순서는 01 → 02 → … → 13이다. 03이나 06은 최소 선행 조건만 갖추면 따로 검증할 수 있지만, 이 표가 다음 Step의 자동 착수를 허용하지 않는다. Step 01~04의 기능은 **구현·검증 완료**이며, Step 05~13은 **미착수**다. 검증 범위와 환경 제약은 [Step01.md](./Step01.md), [Step02.md](./Step02.md), [Step03.md](./Step03.md), [Step04.md](./Step04.md)를 따른다. SFU는 mediasoup 3.32.0으로 선택했으며 실제 WebRTC 송수신은 아직 검증하지 않았다.
 
-다중 회의방 정책 변경의 영향과 후속 회귀 결과는 [MultiRoomPolicyImpact.md](./MultiRoomPolicyImpact.md)를 따른다. 기존 완료 기록은 유지하되, 이번 검증에서 발견한 Step 03의 초과 payload 종료 코드 경합은 미해결이다. Step 04 착수 전 해당 회귀 이슈를 수정·재검증하는 것을 권장한다. 이번 작업에서 Step 04 기능을 구현한 것은 아니다.
+다중 회의방 정책 변경 당시의 영향 분석은 [MultiRoomPolicyImpact.md](./MultiRoomPolicyImpact.md)를 따른다. Step 04의 논리 회의방 완료 기준은 충족했지만, 기존 Step 03의 초과 payload 종료 코드 경합은 재현됐으며 사용자 지시에 따라 별도 작업으로 유지했다. 이후 전체 14개 테스트가 통과한 결과를 결함 해결로 간주하지 않는다. 현재 구현·회귀 결과는 [Step04.md](./Step04.md)를 따른다.
 
 ### Step 01 — TypeScript 실행 기반
 

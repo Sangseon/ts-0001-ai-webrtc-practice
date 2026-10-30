@@ -11,16 +11,28 @@ export type Participant = Profile & { participantId: string };
 export type ProfileRequest = {
   kind: 'request'; type: 'profile.update'; requestId: string; profile: Profile;
 };
-export type ErrorCode = 'INVALID_JSON' | 'INVALID_MESSAGE' | 'UNKNOWN_TYPE' | 'INVALID_PROFILE';
+export type RoomSummary = { roomId: string; name: string; participantCount: number };
+export type RoomState = { roomId: string; name: string; participants: Participant[] };
+export type RoomRequest =
+  | { kind: 'request'; type: 'room.create'; requestId: string; name: string }
+  | { kind: 'request'; type: 'room.join' | 'room.leave'; requestId: string; roomId: string };
+export type ClientRequest = ProfileRequest | RoomRequest;
+export type ErrorCode = 'INVALID_JSON' | 'INVALID_MESSAGE' | 'UNKNOWN_TYPE' | 'INVALID_PROFILE'
+  | 'INVALID_ROOM_NAME' | 'ROOM_NOT_FOUND' | 'ALREADY_JOINED' | 'NOT_JOINED';
 export type ServerMessage =
   | { kind: 'event'; type: 'session.ready'; selfId: string; participants: Participant[] }
   | { kind: 'event'; type: 'participant.joined' | 'participant.updated'; participant: Participant }
   | { kind: 'event'; type: 'participant.left'; participantId: string }
   | { kind: 'response'; type: 'profile.update'; requestId: string; ok: true; participant: Participant }
+  | { kind: 'response'; type: 'room.create' | 'room.join'; requestId: string; ok: true; room: RoomState }
+  | { kind: 'response'; type: 'room.leave'; requestId: string; ok: true; roomId: string }
+  | { kind: 'event'; type: 'rooms.changed'; rooms: RoomSummary[] }
+  | { kind: 'event'; type: 'room.state'; roomId: string; participants: Participant[] }
   | { kind: 'response'; type: 'error'; requestId: string | null; ok: false; code: ErrorCode; message: string };
 
 export const nicknameMaxLength = 20;
-const errorCodes: ErrorCode[] = ['INVALID_JSON', 'INVALID_MESSAGE', 'UNKNOWN_TYPE', 'INVALID_PROFILE'];
+export const roomNameMaxLength = 40;
+const errorCodes: ErrorCode[] = ['INVALID_JSON', 'INVALID_MESSAGE', 'UNKNOWN_TYPE', 'INVALID_PROFILE', 'INVALID_ROOM_NAME', 'ROOM_NOT_FOUND', 'ALREADY_JOINED', 'NOT_JOINED'];
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, allowed: string[]) =>
@@ -36,7 +48,13 @@ export function validateProfile(value: unknown): Profile | null {
   return { nickname, avatarId: value.avatarId };
 }
 
-export function parseRequest(text: string): ProfileRequest | Extract<ServerMessage, { type: 'error' }> {
+export function validateRoomName(value: unknown): string | null {
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/u.test(value)) return null;
+  const name = value.trim();
+  return name && Array.from(name).length <= roomNameMaxLength ? name : null;
+}
+
+export function parseRequest(text: string): ClientRequest | Extract<ServerMessage, { type: 'error' }> {
   let value: unknown;
   const fail = (code: ErrorCode, message: string, requestId: string | null = null): Extract<ServerMessage, { type: 'error' }> =>
     ({ kind: 'response', type: 'error', requestId, ok: false, code, message });
@@ -44,6 +62,16 @@ export function parseRequest(text: string): ProfileRequest | Extract<ServerMessa
   if (!record(value)) return fail('INVALID_MESSAGE', '요청 객체가 필요합니다.');
   const requestId = validId(value.requestId) ? value.requestId : null;
   if (value.kind !== 'request' || !requestId || typeof value.type !== 'string') return fail('INVALID_MESSAGE', '요청 종류와 requestId를 확인해주세요.', requestId);
+  if (value.type === 'room.create') {
+    if (!keys(value, ['kind', 'type', 'requestId', 'name'])) return fail('INVALID_MESSAGE', '회의방 생성 필드를 확인해주세요.', requestId);
+    const name = validateRoomName(value.name);
+    if (!name) return fail('INVALID_ROOM_NAME', '회의방 이름은 앞뒤 공백을 제거한 1~40자이며 제어 문자를 사용할 수 없습니다.', requestId);
+    return { kind: 'request', type: 'room.create', requestId, name };
+  }
+  if (value.type === 'room.join' || value.type === 'room.leave') {
+    if (!keys(value, ['kind', 'type', 'requestId', 'roomId']) || !validId(value.roomId)) return fail('INVALID_MESSAGE', '대상 roomId와 요청 필드를 확인해주세요.', requestId);
+    return { kind: 'request', type: value.type, requestId, roomId: value.roomId };
+  }
   if (value.type !== 'profile.update') return fail('UNKNOWN_TYPE', '지원하지 않는 요청입니다.', requestId);
   if (!keys(value, ['kind', 'type', 'requestId', 'profile'])) return fail('INVALID_MESSAGE', '요청 필드를 확인해주세요. 대상 사용자 ID는 받지 않습니다.', requestId);
   const profile = validateProfile(value.profile);
@@ -56,6 +84,11 @@ function isParticipant(value: unknown): value is Participant {
     && validateProfile({ nickname: value.nickname, avatarId: value.avatarId }) !== null;
 }
 
+function isRoomState(value: unknown): value is RoomState {
+  return record(value) && validId(value.roomId) && validateRoomName(value.name) !== null
+    && Array.isArray(value.participants) && value.participants.every(isParticipant);
+}
+
 export function isServerMessage(value: unknown): value is ServerMessage {
   if (!record(value)) return false;
   if (value.kind === 'event') {
@@ -64,11 +97,15 @@ export function isServerMessage(value: unknown): value is ServerMessage {
       case 'participant.joined':
       case 'participant.updated': return isParticipant(value.participant);
       case 'participant.left': return validId(value.participantId);
+      case 'rooms.changed': return Array.isArray(value.rooms) && value.rooms.every(room => record(room) && validId(room.roomId) && validateRoomName(room.name) !== null && Number.isInteger(room.participantCount) && (room.participantCount as number) > 0);
+      case 'room.state': return validId(value.roomId) && Array.isArray(value.participants) && value.participants.every(isParticipant);
       default: return false;
     }
   }
   if (value.kind !== 'response') return false;
   if (value.type === 'profile.update') return value.ok === true && validId(value.requestId) && isParticipant(value.participant);
+  if (value.type === 'room.create' || value.type === 'room.join') return value.ok === true && validId(value.requestId) && isRoomState(value.room);
+  if (value.type === 'room.leave') return value.ok === true && validId(value.requestId) && validId(value.roomId);
   return value.type === 'error' && value.ok === false && (value.requestId === null || validId(value.requestId))
     && errorCodes.includes(value.code as ErrorCode) && typeof value.message === 'string';
 }

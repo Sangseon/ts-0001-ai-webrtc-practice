@@ -5,7 +5,7 @@
 TypeScript와 Codex를 활용해 SFU 기반 다자간 화상회의를 단계별로 구현하는 실습 프로젝트다.
 
 WebSocket 제어 메시지와 WebRTC 미디어 전송의 역할, 참가자 상태와 미디어 자원의 관리 방식을 학습한다.
-현재는 TypeScript 실행 기반, SFU worker·Router 실행 검증, WebSocket 세션·프로필 동기화까지 완료했다.
+현재는 TypeScript 실행 기반, SFU worker·Router 실행 검증, WebSocket 세션·프로필 동기화와 논리적 다중 회의방 관리까지 구현했다.
 
 Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai-webrtc-practice`다.
 
@@ -42,7 +42,8 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 | 실행 기반 | React 기본 화면, HTTP 상태 확인, 개발 실행·타입 검사·빌드 | 완료 (Step 01) |
 | SFU 실행 검증 | worker·Router 생성·종료, Opus·VP8 설정, 반복 실행·오류 정리 | 완료 (Step 02) |
 | 세션·프로필 | WebSocket 접속자 목록, 닉네임·고정 아바타 변경·동기화 | 완료 (Step 03) |
-| 회의·미디어 | 회의방 생성·다중 참여·방별 퇴장, SFU 기반 다자간 영상·음성 송수신 | 구현 예정 |
+| 회의방 | 생성·자동 입장·다중 참여·방별 퇴장·참가자 목록·빈 방 삭제 | 완료 (Step 04) |
+| 미디어 | SFU 기반 다자간 영상·음성 송수신 | 구현 예정 |
 | Signaling·채팅 | 미디어 연결 제어, 전체·회의방 채팅 | 구현 예정 |
 | 장치 설정 | 카메라·마이크 제어, 장치 선택, 마이크 테스트 | 구현 예정 |
 
@@ -54,9 +55,10 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 
 단일 npm 패키지에서 클라이언트와 서버를 구분하고, 공통 TypeScript strict 설정을 적용한다.
 
-- `client/`: 연결 상태, 본인 ID, 프로필 폼과 접속자 목록을 표시한다.
+- `client/`: 연결 상태·프로필·전체 접속자와 다중 회의방 UI를 표시한다. 화면 선택과 실제 소속을 구분한다.
 - `server/src/index.ts`: HTTP·WebSocket 서버 실행 진입점이다. 세션·프로필의 기준 상태는 서버 메모리에 둔다.
 - `server/src/shared/protocol.ts`: 양쪽의 메시지 타입·아바타 목록·런타임 검증을 공유한다.
+- `server/src/rooms.ts`: 방별 참가자 ID 집합을 소속의 기준 상태로 관리하고 프로필은 세션에서 참조한다.
 - `server/src/sfu-check.ts`: worker 하나와 Router 하나를 생성하고 종료하는 독립 검증 진입점이다.
 
 SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패나 worker 사망 시에도 자원을 정리한다.
@@ -68,6 +70,7 @@ SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패
 - [Step 01](./docs/Step01.md) — 실행 방법, 기술 선택 및 검증 결과
 - [Step 02](./docs/Step02.md) — mediasoup 선택과 worker·Router 실행 검증
 - [Step 03](./docs/Step03.md) — WebSocket 세션·프로필 구현과 검증
+- [Step 04](./docs/Step04.md) — 다중 회의방·참가자 동기화와 검증, 기존 회귀 이슈
 - [ChatHistory](./docs/ChatHistory.md) — 기존 대화 자동 기록 사용 방법
 
 ## What I Learned
@@ -76,6 +79,7 @@ SFU 검증은 기존 HTTP 서버와 별도로 실행한다. Router 생성 실패
 - Windows x64 사전 빌드 worker를 실행해, Router가 worker 자식 프로세스 안에서 생성되는 구조를 확인했다.
 - 객체의 종료 상태와 자식 프로세스의 실제 종료를 각각 확인하고, 반복 실행·실패 상황에서 worker가 남지 않는지 검증했다.
 - 서버가 연결의 ID를 기준으로 프로필을 변경하고, 잘못된 요청과 연결 종료 후에도 다른 사용자의 상태를 유지하는지 확인했다.
+- 방별 ID 집합으로 다중 소속을 표현하고, 한 방 퇴장과 연결 전체 종료의 정리 범위를 구분해 검증했다.
 
 상세 검증 결과와 미검증 항목은 Step 문서에서 확인할 수 있다.
 
@@ -119,6 +123,9 @@ Chrome과 Edge에서 화면을 각각 열어 서로 다른 ID와 접속자 목�
 닉네임·아바타를 변경하면 다른 화면에도 반영되며, 연결 종료 후 `다시 연결`하면 새 ID가 발급된다.
 클라이언트는 같은 호스트의 포트 3000 `/ws`에 연결한다.
 
+회의방을 생성하면 자동 입장하며, 여러 방에 동시에 참여할 수 있다. 방 선택은 화면만 바꾸고 `선택한 방 퇴장`은 그 방 소속만 제거한다.
+Chrome·Edge의 세 독립 세션에서 A는 방 1·2, B는 방 1, C는 방 2로 참가자 목록을 비교할 수 있다.
+
 ### 타입 검사 및 빌드
 
 ```powershell
@@ -142,7 +149,8 @@ WebSocket 통합 테스트:
 npm run test:ws
 ```
 
-메시지 규칙과 브라우저 확인 절차는 [Step 03 문서](./docs/Step03.md)를 참고한다.
+세션·프로필 규칙은 [Step 03 문서](./docs/Step03.md), 회의방 규칙과 브라우저 절차는 [Step 04 문서](./docs/Step04.md)를 참고한다.
+기존 초과 payload의 종료 코드 경합은 미해결이며, Step 04 기능 검증과 구분해 기록했다.
 
 ### SFU 실행 검증
 

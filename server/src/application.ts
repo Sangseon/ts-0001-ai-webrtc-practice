@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { parseRequest } from './shared/protocol.js';
 import type { Participant, ServerMessage } from './shared/protocol.js';
+import { createRoomStore } from './rooms.js';
 
 export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
   const server = createServer((request, response) => {
@@ -12,6 +13,7 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
   });
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4096, perMessageDeflate: false });
   const sessions = new Map<WebSocket, { participant: Participant; alive: boolean }>();
+  const rooms = createRoomStore();
   let closing = false;
 
   // ws forwards HTTP listen errors; consume them as well as the entrypoint's handler.
@@ -32,8 +34,24 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
   function remove(socket: WebSocket) {
     const session = sessions.get(socket);
     if (!session) return;
+    const joined = rooms.joined(session.participant.participantId);
+    for (const roomId of joined) rooms.leave(roomId, session.participant.participantId);
     sessions.delete(socket);
+    for (const roomId of joined) broadcastRoom(roomId);
+    if (joined.length) broadcastRooms();
     broadcast({ kind: 'event', type: 'participant.left', participantId: session.participant.participantId });
+  }
+
+  function roomParticipants(roomId: string) {
+    const ids = rooms.get(roomId)?.participantIds;
+    return [...sessions.values()].filter(session => ids?.has(session.participant.participantId)).map(session => session.participant);
+  }
+  function broadcastRooms() { broadcast({ kind: 'event', type: 'rooms.changed', rooms: rooms.list() }); }
+  function broadcastRoom(roomId: string) {
+    const room = rooms.get(roomId);
+    if (!room || closing) return;
+    const message: ServerMessage = { kind: 'event', type: 'room.state', roomId, participants: roomParticipants(roomId) };
+    for (const [socket, session] of sessions) if (room.participantIds.has(session.participant.participantId)) send(socket, message);
   }
 
   wss.on('connection', socket => {
@@ -43,6 +61,7 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
     socket.on('close', () => remove(socket));
     socket.on('pong', () => { const session = sessions.get(socket); if (session) session.alive = true; });
     send(socket, { kind: 'event', type: 'session.ready', selfId: participant.participantId, participants: [...sessions.values()].map(session => session.participant) });
+    send(socket, { kind: 'event', type: 'rooms.changed', rooms: rooms.list() });
     broadcast({ kind: 'event', type: 'participant.joined', participant }, socket);
 
     socket.on('message', (data, isBinary) => {
@@ -54,9 +73,36 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
       }
       const request = parseRequest(data.toString());
       if (request.type === 'error') { send(socket, request); return; }
+      if (request.type !== 'profile.update') {
+        let roomId: string;
+        if (request.type === 'room.create') {
+          roomId = rooms.create(request.name, session.participant.participantId);
+        } else {
+          roomId = request.roomId;
+          const error = request.type === 'room.join'
+            ? rooms.join(roomId, session.participant.participantId)
+            : rooms.leave(roomId, session.participant.participantId);
+          if (error) {
+            const messages = { ROOM_NOT_FOUND: '회의방이 존재하지 않습니다.', ALREADY_JOINED: '이미 참여 중인 회의방입니다.', NOT_JOINED: '참여하지 않은 회의방입니다.' };
+            send(socket, { kind: 'response', type: 'error', requestId: request.requestId, ok: false, code: error, message: messages[error] });
+            return;
+          }
+        }
+        if (request.type === 'room.leave') {
+          send(socket, { kind: 'response', type: 'room.leave', requestId: request.requestId, ok: true, roomId });
+        } else {
+          send(socket, { kind: 'response', type: request.type, requestId: request.requestId, ok: true,
+            room: { roomId, name: rooms.get(roomId)!.name, participants: roomParticipants(roomId) } });
+        }
+        // One synchronous mutation: response, room snapshot to members, global summaries.
+        broadcastRoom(roomId);
+        broadcastRooms();
+        return;
+      }
       session.participant = { participantId: session.participant.participantId, ...request.profile };
       send(socket, { kind: 'response', type: 'profile.update', requestId: request.requestId, ok: true, participant: session.participant });
       broadcast({ kind: 'event', type: 'participant.updated', participant: session.participant });
+      for (const roomId of rooms.joined(session.participant.participantId)) broadcastRoom(roomId);
     });
   });
 
@@ -76,6 +122,7 @@ export function createApplication({ heartbeatIntervalMs = 30000 } = {}) {
       clearInterval(heartbeat);
       for (const socket of sessions.keys()) socket.terminate();
       sessions.clear();
+      rooms.clear();
       wss.close(() => {
         server.close(error => {
           if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') reject(error);
