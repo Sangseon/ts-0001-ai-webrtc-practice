@@ -103,6 +103,7 @@ Step 02 독립 SFU 검증은 별도 실행한다. 실제 송신용 worker는 첫
 - [Step 11](./docs/Step11.md) — 장치 목록·선택·트랙 교체, 가상 카메라·Mock 마이크 검증과 물리 전환 대기
 - [Step 12](./docs/Step12.md) — 마이크 입력 레벨 분석, 가상 장치·3인 SFU 독립성 검증과 실제 발화 대기
 - [Step 13](./docs/Step13.md) — 전체 요구사항 추적, 회귀·오류·자원 정리 결과와 최종 인수 보류 항목
+- [Step 14](./docs/Step14.md) — 후속 개발 계획 수립 및 QC·QA 검수 기준 문서화
 - [ChatHistory](./docs/ChatHistory.md) — 기존 대화 자동 기록 사용 방법
 
 ## What I Learned
