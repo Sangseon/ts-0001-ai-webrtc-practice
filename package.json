@@ -23,13 +23,15 @@
     "test:sfu": "npm run build:server && node --test scripts/sfu.test.cjs",
     "test:ws": "npm run build:server && node --test scripts/ws.test.cjs",
     "test:media": "node --import tsx --test scripts/media.test.cjs",
+    "test:meter": "node --import tsx --test scripts/microphone-level.test.cjs",
     "test:media:browser": "node scripts/media.browser.cjs",
     "test:sfu:ws": "npm run build:server && node --test scripts/sfu-ws.test.cjs",
     "test:sfu:browser": "node scripts/sfu.browser.cjs",
     "test:sfu:receive:browser": "node scripts/sfu-receive.browser.cjs",
     "test:sfu:multi:browser": "npm run build:server && node scripts/sfu-multi.browser.cjs",
     "test:sfu:controls:browser": "npm run build:server && node scripts/sfu-controls.browser.cjs",
-    "test:sfu:devices:browser": "npm run build:server && node scripts/sfu-devices.browser.cjs"
+    "test:sfu:devices:browser": "npm run build:server && node scripts/sfu-devices.browser.cjs",
+    "test:meter:browser": "npm run build:server && node scripts/microphone-meter.browser.cjs"
   },
   "dependencies": {
     "mediasoup": "3.32.0",

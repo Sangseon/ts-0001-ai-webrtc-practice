@@ -12,6 +12,7 @@ SFU 단일 활성 회의방 송신도 구현했으며, Chrome·Edge 가상 장�
 3인 동적 송수신·반복 재연결과 4개 브라우저 세션의 방 격리도 가상 장치로 검증했다. Map과 native SFU 자원 수를 비교해 정리를 확인했다.
 회의 중 카메라 종료·재획득과 마이크 음소거·해제를 구현했다. 3인 가상 장치로 원격 상태와 실제 RTP 차단·재개를 검증했으며 물리 장치 제어·청취는 미검증이다.
 카메라·마이크 목록과 선택·트랙 교체를 추가했다. 두 가상 카메라와 Mock 마이크 선택을 실제 SFU RTP 경로에서 검증했으며, 서로 다른 물리 장치 전환은 미검증이다.
+선택한 마이크의 입력 레벨 테스트를 추가했다. Chrome·Edge 가상 마이크의 Web Audio 샘플과 회의 중 음소거 독립성을 검증했으며, 실제 발화 검증은 남아 있다.
 
 Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai-webrtc-practice`다.
 
@@ -58,7 +59,7 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 | Signaling | capabilities·Send/Recv Transport·Producer/Consumer·통계·종료 | 송수신 구현 (Step 07~08) |
 | 미디어 제어 | 카메라 OFF/ON, 기존 Audio Producer pause/resume, 원격 상태 표시 | 구현·가상 장치 검증, 물리 인수 대기 (Step 10) |
 | 장치 설정 | 입력 목록·기본/명시 선택·replaceTrack 전환·장치 변경 안내 | 구현·자동 검증, 물리 전환 인수 대기 (Step 11) |
-| 마이크 테스트 | 입력 레벨 표시 | 구현 예정 (Step 12) |
+| 마이크 테스트 | Web Audio 입력 RMS와 상대 레벨 표시, 회의 송신과 독립적인 분석 | 구현·가상 장치 검증, 실제 발화 대기 (Step 12) |
 
 실제 SFU RTP 송수신은 3인 루프백·가상 장치까지 검증했으며 물리 장치의 실제 청취는 남아 있다.
 다중 회의방 소속·채팅은 유지하고 실제 송수신은 참가자당 한 방으로 제한한다. 회의방 목록·채팅 화면 선택만으로 미디어 대상이 바뀌지 않는다.
@@ -71,6 +72,7 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 - `client/`: 연결 상태·프로필·전체 접속자·다중 회의방·채팅 UI를 표시한다. 화면 선택과 실제 소속을 구분한다. `Chat.tsx`는 채팅 화면, `useSession.ts`는 단일 연결과 제한된 내역·공통 작성자 표시 정보를 관리한다.
 - `client/src/LocalMedia.tsx`, `useLocalMedia.ts`: WebSocket 상태와 독립적으로 사용자 클릭에 따른 로컬 미디어 획득·재생·종료를 관리한다.
 - `client/src/useMediaDevices.ts`: 장치 목록과 세션 내 선택을 관리한다. 사용 트랙 교체는 로컬 소유 Hook과 SFU Producer가 협력하며 서버에 deviceId를 보내지 않는다.
+- `client/src/useMicrophoneMeter.ts`, `microphoneLevel.ts`: 공유 또는 테스트 전용 마이크 트랙에서 Web Audio 샘플을 읽고 상대 입력 레벨을 계산한다. 테스트 종료 시 분석 자원만 정리한다.
 - `client/src/MediaPanel.tsx`, `useSfuSender.ts`: 기존 송신과 같은 활성 시도에 수신을 연결하고 명시적으로 전환·종료한다. `RemoteMedia.tsx`는 공통 프로필과 원격 영상·음성 재생을 표시한다.
 - `server/src/media.ts`: 지연 생성 단일 worker·방별 Router·참가자별 활성 송수신 자원과 소유권을 관리한다.
 - `server/src/index.ts`: HTTP·WebSocket 서버 실행 진입점이다. 세션·프로필의 기준 상태는 서버 메모리에 둔다.
@@ -95,6 +97,7 @@ Step 02 독립 SFU 검증은 별도 실행한다. 실제 송신용 worker는 첫
 - [Step 09](./docs/Step09.md) — 동적 다자간 송수신·종료·재연결·방 격리와 native 자원 개수 검증
 - [Step 10](./docs/Step10.md) — 카메라 재획득·마이크 pause/resume·음소거 유지와 실제 RTP 검증
 - [Step 11](./docs/Step11.md) — 장치 목록·선택·트랙 교체, 가상 카메라·Mock 마이크 검증과 물리 전환 대기
+- [Step 12](./docs/Step12.md) — 마이크 입력 레벨 분석, 가상 장치·3인 SFU 독립성 검증과 실제 발화 대기
 - [ChatHistory](./docs/ChatHistory.md) — 기존 대화 자동 기록 사용 방법
 
 ## What I Learned
@@ -189,6 +192,8 @@ npm run test:ws
 ```powershell
 npm run test:media          # Mock 단위 테스트
 npm run test:media:browser  # Windows Chrome·Edge 가상 장치, 개발 서버를 먼저 종료
+npm run test:meter          # RMS 계산 단위 테스트
+npm run test:meter:browser  # Chrome·Edge 가상 마이크 분석과 3인 SFU 독립성
 ```
 
 가상 장치 테스트는 별도 임시 브라우저 프로필을 만들고 종료 후 제거한다. 실제 카메라·마이크 하드웨어나 권한 대화상자 검증을 대신하지 않는다.

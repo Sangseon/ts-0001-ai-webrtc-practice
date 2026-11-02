@@ -17,7 +17,7 @@ function child(exe, args) {
 }
 const instrumentation = `(() => {
   window.mediaProbe = { calls: 0, streams: [], tracks: [], requests: [], mode: 'native', held: null, options: [] };
-  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1' || process.env.CHECK_SFU_MULTI === '1' || process.env.CHECK_SFU_CONTROL === '1'}) {
+  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1' || process.env.CHECK_SFU_MULTI === '1' || process.env.CHECK_SFU_CONTROL === '1' || process.env.CHECK_MIC_METER === '1'}) {
     const NativeWebSocket=window.WebSocket;
     window.WebSocket=class extends NativeWebSocket {
       constructor(...args){super(...args);if(String(args[0]).endsWith('/ws'))window.mediaProbe.socket=this;}
@@ -68,6 +68,7 @@ async function browser(exe) {
   await call('Page.enable'); await call('Runtime.enable');
   await call('Page.addScriptToEvaluateOnNewDocument', { source: instrumentation });
   if (process.env.CHECK_SFU_DEVICES === '1') await call('Page.addScriptToEvaluateOnNewDocument', { source: require('./devices.fixture.cjs') });
+  if (process.env.CHECK_MIC_METER === '1') await call('Page.addScriptToEvaluateOnNewDocument', { source: require('./microphone-meter.fixture.cjs') });
   await call('Page.navigate', { url: 'http://127.0.0.1:5173' });
   await until(() => evaluate("!!document.getElementById('media-start')"), 'React loaded');
   return b;
@@ -220,7 +221,10 @@ async function unmountScenarios(b) {
   await until(async () => { try { return (await fetch('http://127.0.0.1:3000/health')).ok; } catch { return false; } }, 'HTTP');
   const chrome = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
   const edge = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
-  if (process.env.CHECK_SFU_DEVICES === '1') {
+  if (process.env.CHECK_MIC_METER === '1') {
+    const c = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
+    await require('./microphone-meter.scenarios.cjs')({ pages: [chrome,edge,c], until, click, selectMedia, waitState, ended, control });
+  } else if (process.env.CHECK_SFU_DEVICES === '1') {
     const c = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
     await require('./sfu-devices.scenarios.cjs')({ pages: [chrome,edge,c], until, click, selectMedia, waitState, ended, control });
   } else if (process.env.CHECK_SFU_CONTROL === '1') {

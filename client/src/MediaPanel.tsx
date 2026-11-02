@@ -12,7 +12,7 @@ export function MediaPanel({ session }: { session: ReturnType<typeof useSession>
   const joined = session.rooms.filter(room => Object.hasOwn(session.joinedRooms, room.roomId));
   const selected = joined.some(r => r.roomId === target) ? target : '';
   return <>
-    <LocalMediaControls media={local} onSwitch={sender.switchDevice} microphoneBusy={sender.micState === '음소거 처리 중' || sender.micState === '음소거 해제 중'} onStop={() => { void sender.stop().catch(() => {}); local.stop(); }} />
+    <LocalMediaControls media={local} onSwitch={sender.switchDevice} callMuted={sender.muted} microphoneBusy={sender.micState === '음소거 처리 중' || sender.micState === '음소거 해제 중'} onStop={() => { void sender.stop().catch(() => {}); local.stop(); }} />
     <section aria-label="SFU 송수신">
       <h2>SFU 미디어 송수신</h2>
       <p>방 목록·채팅 화면 선택과 독립적입니다. 한 번에 한 방으로만 송수신합니다.</p>
