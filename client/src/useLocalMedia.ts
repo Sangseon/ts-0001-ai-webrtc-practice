@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { deviceConstraint, useMediaDevices } from './useMediaDevices';
+import type { InputKind } from './useMediaDevices';
 
-export type TrackInfo = { id: string; kind: string; readyState: MediaStreamTrackState };
+export type TrackInfo = { id: string; kind: string; readyState: MediaStreamTrackState; deviceId?: string; label?: string };
 export type MediaSelection = { video: boolean; audio: boolean };
-export function mediaConstraints(selection: MediaSelection): MediaSelection | null {
-  return selection.video || selection.audio ? { video: selection.video, audio: selection.audio } : null;
+export function mediaConstraints(selection: MediaSelection, devices = { video: '', audio: '' }): MediaStreamConstraints | null {
+  return selection.video || selection.audio ? { video: selection.video && deviceConstraint(devices.video), audio: selection.audio && deviceConstraint(devices.audio) } : null;
 }
 export function matchesMediaSelection(stream: MediaStream, selection: MediaSelection): boolean {
   return (['video', 'audio'] as const).every(kind => {
@@ -12,7 +14,8 @@ export function matchesMediaSelection(stream: MediaStream, selection: MediaSelec
   });
 }
 type MediaState = { status: 'idle' | 'requesting' | 'ready' | 'stopping' | 'error'; tracks: TrackInfo[]; error: string };
-const trackInfo = (stream: MediaStream): TrackInfo[] => stream.getTracks().map(({ id, kind, readyState }) => ({ id, kind, readyState }));
+const trackInfo = (stream: MediaStream): TrackInfo[] => stream.getTracks().map(track => ({ id: track.id, kind: track.kind, readyState: track.readyState,
+  ...(track.getSettings ? { deviceId: track.getSettings().deviceId, label: track.label } : {}) }));
 const cleanupWarning = (failed: boolean) => failed ? ' 일부 트랙을 종료하지 못했습니다. 브라우저의 장치 사용 표시를 확인해주세요.' : '';
 
 // Attempt every track even if one source fails to release; callers report failure.
@@ -38,6 +41,11 @@ export function mediaErrorMessage(error: unknown): string {
 }
 
 export function useLocalMedia() {
+  const devices = useMediaDevices();
+  const [switching, setSwitching] = useState({ video: false, audio: false });
+  const [switchError, setSwitchError] = useState('');
+  const [switchResult, setSwitchResult] = useState('');
+  const switchBusy = useRef({ video: false, audio: false });
   const [state, setState] = useState<MediaState>({ status: 'idle', tracks: [], error: '' });
   const [pending, setPending] = useState(false);
   const [cameraPending, setCameraPending] = useState(false);
@@ -107,7 +115,7 @@ export function useLocalMedia() {
     try {
       if (!window.isSecureContext) throw new DOMException('Secure context required', 'SecurityError');
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('MediaDevices API 미지원');
-      acquired = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      acquired = await navigator.mediaDevices.getUserMedia({ video: deviceConstraint(devices.selected.video), audio: false });
       if (!current()) throw new Error('취소된 카메라 획득');
       if (!matchesMediaSelection(acquired, { video: true, audio: false }) || acquired.getVideoTracks().length !== 1) throw new DOMException('Missing video', 'NotFoundError');
       const track = acquired.getVideoTracks()[0]!;
@@ -126,12 +134,13 @@ export function useLocalMedia() {
     } finally {
       cameraRequest.current = false;
       if (mounted.current) setCameraPending(false);
+      void devices.refresh();
     }
   }
 
   async function start(selection: MediaSelection) {
     if (!mounted.current || request.current !== null || streamRef.current) return;
-    const constraints = mediaConstraints(selection);
+    const constraints = mediaConstraints(selection, devices.selected);
     if (!constraints) return;
     if (!window.isSecureContext) {
       setState({ status: 'error', tracks: [], error: '미디어 접근에는 보안 컨텍스트가 필요합니다. localhost·127.0.0.1 또는 신뢰할 수 있는 HTTPS 주소를 사용해주세요.' });
@@ -155,7 +164,7 @@ export function useLocalMedia() {
         return;
       }
       streamRef.current = stream;
-      if (!matchesMediaSelection(stream, constraints)) {
+      if (!matchesMediaSelection(stream, selection)) {
         throw new DOMException('The stream must match the requested media kinds', 'NotFoundError');
       }
       const ended = () => {
@@ -189,6 +198,7 @@ export function useLocalMedia() {
         setState({ status: 'error', tracks: result.tracks, error: mediaErrorMessage(error) + cleanupWarning(result.failed) });
       } else if (mounted.current) setState({ status: 'idle', tracks: [], error: '' });
     } finally {
+      void devices.refresh();
       if (request.current === id) {
         request.current = null;
         if (mounted.current) {
@@ -200,5 +210,42 @@ export function useLocalMedia() {
     }
   }
 
-  return { ...state, pending, cameraPending, start, stop, dropVideo, acquireVideo, videoRef, streamRef };
+  // The owner commits only after the sender accepted the candidate. Until then the
+  // old track remains live in the owned stream. stopTracks:false leaves cleanup here.
+  async function switchDevice(kind: InputKind, replace: (track: MediaStreamTrack, valid: () => boolean) => Promise<void>, valid: () => boolean) {
+    const stream = streamRef.current, previous = stream?.getTracks().find(t => t.kind === kind && t.readyState === 'live');
+    if (!stream || !previous || switchBusy.current[kind] || (kind === 'video' && cameraRequest.current)) return;
+    const epoch = generation.current;
+    const current = () => mounted.current && generation.current === epoch && streamRef.current === stream && previous.readyState === 'live' && valid();
+    switchBusy.current[kind] = true;
+    setSwitching(s => ({ ...s, [kind]: true })); setSwitchError(''); setSwitchResult('');
+    let acquired: MediaStream | undefined;
+    let committed = false;
+    try {
+      acquired = await navigator.mediaDevices.getUserMedia({ [kind]: deviceConstraint(devices.selected[kind]), [kind === 'video' ? 'audio' : 'video']: false });
+      const track = acquired.getTracks()[0];
+      if (!current()) throw new Error('종료되거나 취소된 장치 전환입니다.');
+      if (!track || track.kind !== kind || track.readyState !== 'live' || acquired.getTracks().length !== 1) throw new Error('요청한 종류의 트랙을 획득하지 못했습니다.');
+      track.enabled = previous.enabled;
+      await replace(track, current);
+      if (!current()) throw new Error('종료되거나 취소된 장치 전환입니다.');
+      if (trackEnded.current) { previous.removeEventListener('ended', trackEnded.current); track.addEventListener('ended', trackEnded.current); }
+      stream.removeTrack(previous); stream.addTrack(track); committed = true;
+      previous.stop();
+      setState(s => ({ ...s, tracks: trackInfo(stream) }));
+      if (kind === 'video') {
+        const video = videoRef.current;
+        if (video) { attachedVideo.current = video; video.srcObject = stream; await video.play(); }
+      }
+      if (mounted.current && streamRef.current === stream) setSwitchResult(`${kind === 'video' ? '카메라' : '마이크'} 트랙 교체 완료`);
+    } catch (cause) {
+      if (!committed && acquired) stopMediaStream(acquired);
+      if (mounted.current && generation.current === epoch) setSwitchError((committed ? '트랙 교체는 적용됐으나 정리 또는 미리보기에 실패했습니다. ' : previous.readyState === 'live' ? '장치 전환 실패. 기존 트랙을 유지합니다. ' : '장치 전환이 취소됐으며 이전 트랙도 종료된 상태입니다. ') + mediaErrorMessage(cause));
+    } finally {
+      switchBusy.current[kind] = false;
+      if (mounted.current) setSwitching(s => ({ ...s, [kind]: false }));
+      void devices.refresh();
+    }
+  }
+  return { ...state, pending, cameraPending, start, stop, dropVideo, acquireVideo, switchDevice, switching, switchError, switchResult, devices, videoRef, streamRef };
 }

@@ -41,7 +41,7 @@ const instrumentation = `(() => {
 async function browser(exe) {
   const dir = await mkdtemp(join(tmpdir(), 'webrtc-step06-')); profiles.push(dir);
   child(exe, ['--headless=new', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', '--user-data-dir=' + dir,
-    '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', 'about:blank']);
+    process.env.CHECK_SFU_DEVICES === '1' ? '--use-fake-device-for-media-stream=device-count=2,fps=10' : '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--mute-audio', 'about:blank']);
   let port;
   await until(async () => { try { port = Number((await readFile(join(dir, 'DevToolsActivePort'), 'utf8')).split('\n')[0]); return !!port; } catch { return false; } }, 'browser launch');
   const target = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
@@ -67,6 +67,7 @@ async function browser(exe) {
   const b = { call, evaluate, ws, exceptions }; browsers.push(b);
   await call('Page.enable'); await call('Runtime.enable');
   await call('Page.addScriptToEvaluateOnNewDocument', { source: instrumentation });
+  if (process.env.CHECK_SFU_DEVICES === '1') await call('Page.addScriptToEvaluateOnNewDocument', { source: require('./devices.fixture.cjs') });
   await call('Page.navigate', { url: 'http://127.0.0.1:5173' });
   await until(() => evaluate("!!document.getElementById('media-start')"), 'React loaded');
   return b;
@@ -219,7 +220,10 @@ async function unmountScenarios(b) {
   await until(async () => { try { return (await fetch('http://127.0.0.1:3000/health')).ok; } catch { return false; } }, 'HTTP');
   const chrome = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
   const edge = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
-  if (process.env.CHECK_SFU_CONTROL === '1') {
+  if (process.env.CHECK_SFU_DEVICES === '1') {
+    const c = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
+    await require('./sfu-devices.scenarios.cjs')({ pages: [chrome,edge,c], until, click, selectMedia, waitState, ended, control });
+  } else if (process.env.CHECK_SFU_CONTROL === '1') {
     const c = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
     await require('./sfu-controls.scenarios.cjs')({ pages: [chrome,edge,c], until, click, selectMedia, waitState, ended, control });
   } else if (process.env.CHECK_SFU_MULTI === '1') {

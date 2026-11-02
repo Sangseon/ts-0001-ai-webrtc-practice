@@ -11,6 +11,7 @@ SFU 단일 활성 회의방 송신도 구현했으며, Chrome·Edge 가상 장�
 2인 양방향 수신과 수신 전용 연결을 추가해 원격 영상 프레임·오디오 RTP·재생 상태를 검증했다. 실제 음성 청취는 미검증이다.
 3인 동적 송수신·반복 재연결과 4개 브라우저 세션의 방 격리도 가상 장치로 검증했다. Map과 native SFU 자원 수를 비교해 정리를 확인했다.
 회의 중 카메라 종료·재획득과 마이크 음소거·해제를 구현했다. 3인 가상 장치로 원격 상태와 실제 RTP 차단·재개를 검증했으며 물리 장치 제어·청취는 미검증이다.
+카메라·마이크 목록과 선택·트랙 교체를 추가했다. 두 가상 카메라와 Mock 마이크 선택을 실제 SFU RTP 경로에서 검증했으며, 서로 다른 물리 장치 전환은 미검증이다.
 
 Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai-webrtc-practice`다.
 
@@ -56,7 +57,8 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 | 로컬 미디어 | 카메라만·마이크만·두 종류 선택 획득, 음소거 미리보기, 트랙 종료 | 구현·가상 검증, 물리 검증 대기 (Step 06) |
 | Signaling | capabilities·Send/Recv Transport·Producer/Consumer·통계·종료 | 송수신 구현 (Step 07~08) |
 | 미디어 제어 | 카메라 OFF/ON, 기존 Audio Producer pause/resume, 원격 상태 표시 | 구현·가상 장치 검증, 물리 인수 대기 (Step 10) |
-| 장치 설정 | 장치 목록·선택·전환, 마이크 테스트 | 구현 예정 (Step 11~12) |
+| 장치 설정 | 입력 목록·기본/명시 선택·replaceTrack 전환·장치 변경 안내 | 구현·자동 검증, 물리 전환 인수 대기 (Step 11) |
+| 마이크 테스트 | 입력 레벨 표시 | 구현 예정 (Step 12) |
 
 실제 SFU RTP 송수신은 3인 루프백·가상 장치까지 검증했으며 물리 장치의 실제 청취는 남아 있다.
 다중 회의방 소속·채팅은 유지하고 실제 송수신은 참가자당 한 방으로 제한한다. 회의방 목록·채팅 화면 선택만으로 미디어 대상이 바뀌지 않는다.
@@ -68,6 +70,7 @@ Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai
 
 - `client/`: 연결 상태·프로필·전체 접속자·다중 회의방·채팅 UI를 표시한다. 화면 선택과 실제 소속을 구분한다. `Chat.tsx`는 채팅 화면, `useSession.ts`는 단일 연결과 제한된 내역·공통 작성자 표시 정보를 관리한다.
 - `client/src/LocalMedia.tsx`, `useLocalMedia.ts`: WebSocket 상태와 독립적으로 사용자 클릭에 따른 로컬 미디어 획득·재생·종료를 관리한다.
+- `client/src/useMediaDevices.ts`: 장치 목록과 세션 내 선택을 관리한다. 사용 트랙 교체는 로컬 소유 Hook과 SFU Producer가 협력하며 서버에 deviceId를 보내지 않는다.
 - `client/src/MediaPanel.tsx`, `useSfuSender.ts`: 기존 송신과 같은 활성 시도에 수신을 연결하고 명시적으로 전환·종료한다. `RemoteMedia.tsx`는 공통 프로필과 원격 영상·음성 재생을 표시한다.
 - `server/src/media.ts`: 지연 생성 단일 worker·방별 Router·참가자별 활성 송수신 자원과 소유권을 관리한다.
 - `server/src/index.ts`: HTTP·WebSocket 서버 실행 진입점이다. 세션·프로필의 기준 상태는 서버 메모리에 둔다.
@@ -91,6 +94,7 @@ Step 02 독립 SFU 검증은 별도 실행한다. 실제 송신용 worker는 첫
 - [Step 08](./docs/Step08.md) — 2인 양방향 수신·수신 전용·원격 재생, 가상 검증과 실제 청취 대기
 - [Step 09](./docs/Step09.md) — 동적 다자간 송수신·종료·재연결·방 격리와 native 자원 개수 검증
 - [Step 10](./docs/Step10.md) — 카메라 재획득·마이크 pause/resume·음소거 유지와 실제 RTP 검증
+- [Step 11](./docs/Step11.md) — 장치 목록·선택·트랙 교체, 가상 카메라·Mock 마이크 검증과 물리 전환 대기
 - [ChatHistory](./docs/ChatHistory.md) — 기존 대화 자동 기록 사용 방법
 
 ## What I Learned
@@ -106,6 +110,7 @@ Step 02 독립 SFU 검증은 별도 실행한다. 실제 송신용 worker는 첫
 - Consumer 생성 후 브라우저 준비·서버 재개 순서를 연결하고, 수신 RTP 증가·디코딩·영상 프레임을 함께 확인했다. 수신 전용의 자동 재생 차단과 사용자 클릭에 의한 재개도 검증했다.
 - 3인 입퇴장과 개별 원본 종료가 다른 미디어·논리 소속에 영향을 주지 않는지, 반복 실행 후 Map·worker/Router 덤프의 자원 수가 기준으로 돌아오는지 검증했다.
 - 카메라는 트랙과 Producer를 다시 만들고 마이크는 기존 Producer를 유지하는 차이를 확인했다. 서버 pause·원격 Consumer 상태와 RTP 통계를 함께 측정하고 방 전환 중 음소거를 유지했다.
+- 장치 전환은 Producer·Consumer·Transport ID를 유지한 채 트랙만 바꿀 수 있었다. 음소거 중 교체에서도 새 트랙 비활성·서버 pause와 원격 RTP 차단을 확인했다.
 
 상세 검증 결과와 미검증 항목은 Step 문서에서 확인할 수 있다.
 
@@ -196,9 +201,12 @@ npm run test:sfu:browser  # 개발 서버 종료 후 Chrome·Edge 가상 장치�
 npm run test:sfu:receive:browser # 2인 수신·재생·방 격리·SFU 중단 검증
 npm run test:sfu:multi:browser   # 4개 독립 세션: 3인 상호 RTP·동적 종료·방 격리·native 자원 검증
 npm run test:sfu:controls:browser # 3인 카메라·마이크 제어 5회 반복·RTP 차단/재개·경합 검증
+npm run test:sfu:devices:browser  # 순차 3인: 가상 카메라 2개·Mock 마이크·replaceTrack·음소거 유지
 ```
 
 SFU 송신 중 `카메라 OFF / 켜기 취소`, `카메라 ON`, `마이크 음소거/해제`를 사용한다. 카메라는 종료 후 다시 획득하고, 음소거는 기존 마이크 트랙과 Producer를 유지한다. 방 전환으로 음소거가 자동 해제되지 않는다. 수신 전용에서는 제어 버튼이 비활성이다. 실제 장치 수동 절차와 제한은 [Step 10 문서](./docs/Step10.md)를 따른다.
+
+장치 선택은 로컬 미디어 영역에서 수행한다. 기본 장치 또는 장치를 선택한 뒤 로컬 미디어를 시작하고, 사용 중에는 `선택 장치 적용`으로 해당 종류만 교체한다. 선택값과 실제 사용 장치·트랙 ID를 별도로 표시한다. 카메라 OFF 상태의 선택은 카메라 ON까지 획득하지 않는다. 브라우저 테스트는 임시 프로필에 `--mute-audio`를 적용해 스피커 출력만 억제하며 RTP는 계속 측정한다. 물리 장치·실제 청취를 대체하지 않는다.
 
 현재 미디어 주소는 127.0.0.1, UDP/TCP 포트 범위는 40000~40100이다. 다른 PC·LAN 배포는 검증하지 않았다. 물리 이어폰 마이크 송신 확인 절차는 Step 07 문서를 따른다.
 

@@ -12,7 +12,7 @@ export function MediaPanel({ session }: { session: ReturnType<typeof useSession>
   const joined = session.rooms.filter(room => Object.hasOwn(session.joinedRooms, room.roomId));
   const selected = joined.some(r => r.roomId === target) ? target : '';
   return <>
-    <LocalMediaControls media={local} onStop={() => { void sender.stop().catch(() => {}); local.stop(); }} />
+    <LocalMediaControls media={local} onSwitch={sender.switchDevice} microphoneBusy={sender.micState === '음소거 처리 중' || sender.micState === '음소거 해제 중'} onStop={() => { void sender.stop().catch(() => {}); local.stop(); }} />
     <section aria-label="SFU 송수신">
       <h2>SFU 미디어 송수신</h2>
       <p>방 목록·채팅 화면 선택과 독립적입니다. 한 번에 한 방으로만 송수신합니다.</p>
@@ -33,7 +33,7 @@ export function MediaPanel({ session }: { session: ReturnType<typeof useSession>
         <p data-testid="mic-state" data-muted={sender.muted}>마이크: {sender.micState}</p>
         <button id="camera-off" disabled={!sender.canSend || sender.cameraState === '꺼짐' || sender.cameraState === '미획득' || sender.cameraState === '끄는 중'} onClick={() => void sender.cameraOff()}>카메라 OFF / 켜기 취소</button>{' '}
         <button id="camera-on" disabled={!sender.canSend || sender.cameraState === '송신 중' || sender.cameraState === '다시 켜는 중' || sender.cameraState === '끄는 중' || local.cameraPending} onClick={() => void sender.cameraOn()}>카메라 ON</button>{' '}
-        <button id="mic-toggle" disabled={!sender.canSend || !sender.hasMicrophone || sender.micState === '음소거 처리 중' || sender.micState === '음소거 해제 중'} onClick={() => void sender.setMicrophoneMuted(sender.micState === '오류' ? true : !sender.muted)}>{sender.micState === '오류' ? '음소거 다시 확인' : sender.muted ? '마이크 음소거 해제' : '마이크 음소거'}</button>
+        <button id="mic-toggle" disabled={!sender.canSend || !sender.hasMicrophone || local.switching.audio || sender.micState === '음소거 처리 중' || sender.micState === '음소거 해제 중'} onClick={() => void sender.setMicrophoneMuted(sender.micState === '오류' ? true : !sender.muted)}>{sender.micState === '오류' ? '음소거 다시 확인' : sender.muted ? '마이크 음소거 해제' : '마이크 음소거'}</button>
         {!sender.hasMicrophone && <p>마이크 송신을 처음 시작하려면 로컬 미디어 선택·SFU 연결을 명시적으로 진행하세요. 음소거 해제는 장치를 획득하지 않습니다.</p>}
         {sender.controlError && <p role="alert" data-testid="media-control-error">{sender.controlError}</p>}
       </div>

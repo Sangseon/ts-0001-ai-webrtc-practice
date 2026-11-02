@@ -28,7 +28,8 @@
     "test:sfu:browser": "node scripts/sfu.browser.cjs",
     "test:sfu:receive:browser": "node scripts/sfu-receive.browser.cjs",
     "test:sfu:multi:browser": "npm run build:server && node scripts/sfu-multi.browser.cjs",
-    "test:sfu:controls:browser": "npm run build:server && node scripts/sfu-controls.browser.cjs"
+    "test:sfu:controls:browser": "npm run build:server && node scripts/sfu-controls.browser.cjs",
+    "test:sfu:devices:browser": "npm run build:server && node scripts/sfu-devices.browser.cjs"
   },
   "dependencies": {
     "mediasoup": "3.32.0",

@@ -6,6 +6,7 @@ import type { RemoteProducer, MediaPeer, MediaAction } from '../../server/src/sh
 import { mediaErrorMessage } from './useLocalMedia';
 import type { useSession } from './useSession';
 import type { useLocalMedia } from './useLocalMedia';
+import type { InputKind } from './useMediaDevices';
 
 export type RemoteTrack = { participantId: string; producerId: string; consumerId: string; kind: 'audio' | 'video'; track: MediaStreamTrack };
 type Attempt = { mediaId: string; roomId: string; transport?: Transport; producers: Producer[]; timer?: ReturnType<typeof setTimeout>;
@@ -22,6 +23,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
   const cameraBusy = useRef(false);
   const cameraOffBusy = useRef(false);
   const micBusy = useRef(false);
+  const deviceBusy = useRef({ video: false, audio: false });
   const [cameraState, setCameraState] = useState('미획득');
   const [micState, setMicState] = useState('미획득');
   const [controlError, setControlError] = useState('');
@@ -256,7 +258,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
   }, [rpc, stop]);
   async function setMicrophoneMuted(next: boolean) {
     const attempt = current.current;
-    if (!attempt?.send || micBusy.current || attempt.receiveOnly) return;
+    if (!attempt?.send || micBusy.current || deviceBusy.current.audio || attempt.receiveOnly) return;
     const producer = attempt.producers.find(p => p.kind === 'audio' && !p.closed);
     if (!producer || producer.track?.readyState !== 'live') { setMicState('오류'); setControlError('송신 중인 live 마이크가 없습니다. 로컬 미디어 선택·연결을 다시 확인해주세요.'); return; }
     micBusy.current = true; setControlError(''); setMicState(next ? '음소거 처리 중' : '음소거 해제 중');
@@ -289,7 +291,7 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
   }
   async function cameraOn() {
     const attempt = current.current;
-    if (!attempt?.send || !attempt.transport || !attempt.device || attempt.receiveOnly || cameraBusy.current || localOwner.current.cameraPending || attempt.producers.some(p => p.kind === 'video')) return;
+    if (!attempt?.send || !attempt.transport || !attempt.device || attempt.receiveOnly || cameraBusy.current || localOwner.current.cameraPending || deviceBusy.current.video || attempt.producers.some(p => p.kind === 'video')) return;
     const epoch = ++cameraEpoch.current;
     const valid = () => current.current === attempt && epoch === cameraEpoch.current;
     cameraBusy.current = true; setCameraState('다시 켜는 중'); setControlError('');
@@ -313,6 +315,28 @@ export function useSfuSender(session: ReturnType<typeof useSession>, local: Retu
       if (valid()) { setCameraState('실패'); setControlError(mediaErrorMessage(error)); }
     } finally { attempt.cameraTrack = undefined; cameraBusy.current = false; }
   }
-  return { ...state, stats, remoteTracks, remotePeers, recvConnection, cameraState, micState, muted, controlError,
+  async function switchDevice(kind: InputKind) {
+    const attempt = current.current;
+    if (deviceBusy.current[kind] || (kind === 'audio' && micBusy.current) || (kind === 'video' && (cameraBusy.current || cameraOffBusy.current))) return;
+    const producer = attempt?.producers.find(p => p.kind === kind && !p.closed);
+    if (attempt && !attempt.receiveOnly && !producer) return;
+    const epoch = cameraEpoch.current;
+    const valid = () => current.current === attempt && (!producer || !producer.closed) && (kind !== 'video' || epoch === cameraEpoch.current);
+    deviceBusy.current[kind] = true;
+    try { await localOwner.current.switchDevice(kind, async (track, ownerValid) => {
+      if (!valid() || !ownerValid()) throw new Error('취소된 장치 전환');
+      if (!producer) return;
+      if (kind === 'audio' && (mutedIntent.current || producer.paused)) track.enabled = false;
+      await producer.replaceTrack({ track });
+      if (!valid() || !ownerValid()) {
+        if (!producer.closed) {
+          producer.close();
+          if (current.current === attempt && attempt?.send) await attempt.send('producer.close', { transportId: attempt.transport!.id, producerId: producer.id });
+        }
+        throw new Error('종료 중인 장치 전환');
+      }
+    }, valid); } finally { deviceBusy.current[kind] = false; }
+  }
+  return { ...state, stats, remoteTracks, remotePeers, recvConnection, cameraState, micState, muted, controlError, switchDevice,
     canSend: !!current.current?.transport && !current.current.receiveOnly && (state.phase === 'sending' || state.phase === 'ready'), hasMicrophone: !!current.current?.producers.some(p => p.kind === 'audio' && !p.closed), cameraOn, cameraOff, setMicrophoneMuted, start, stop };
 }

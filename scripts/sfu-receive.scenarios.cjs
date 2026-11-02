@@ -133,6 +133,8 @@ module.exports = async ({ chrome: a, edge: b, until, click, selectMedia, waitSta
   assert.equal(await a.evaluate("mediaProbe.pcs.every(pc=>pc.connectionState==='closed')"), true);
   await until(() => b.evaluate("document.querySelector('[data-testid=connection-status]').textContent==='연결됨'"), 'other socket preserved');
   assert.equal((await stats(b)).server.producers.length, 2);
+  // Media resources can close before the WebSocket close event updates React.
+  await until(() => a.evaluate("document.querySelector('[data-testid=connection-status]').textContent==='연결 종료' && Array.from(document.querySelectorAll('button')).some(e=>e.textContent==='다시 연결')"), 'WebSocket close UI');
   await a.evaluate("Array.from(document.querySelectorAll('button')).find(e=>e.textContent==='다시 연결').click()");
   await until(() => a.evaluate(`document.querySelector('[data-testid=self-id]').textContent!=='없음' && document.querySelector('[data-testid=self-id]').textContent!==${JSON.stringify(oldId)}`), 'new session ID');
   assert.equal(await a.evaluate("document.querySelectorAll('[data-joined-room-id]').length"), 0);

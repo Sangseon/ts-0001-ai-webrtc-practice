@@ -1,6 +1,32 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const media = import('../client/src/useLocalMedia.ts');
+const devices = import('../client/src/useMediaDevices.ts');
+
+test('device catalogue filters outputs, deduplicates IDs per kind and retains private labels', async () => {
+  const { inputDevices } = await devices;
+  const list = inputDevices([
+    { kind: 'videoinput', deviceId: '', label: '' },
+    { kind: 'videoinput', deviceId: '', label: '' },
+    { kind: 'audioinput', deviceId: '', label: '' },
+    { kind: 'audiooutput', deviceId: 'speaker', label: 'Speaker' },
+    { kind: 'videoinput', deviceId: 'cam-b', label: 'Camera B' },
+  ]);
+  assert.equal(list.length, 3);
+  assert.equal(list[0].deviceId, '');
+  assert.match(list[0].label, /1/);
+  assert.equal(list[1].kind, 'audio');
+  assert.equal(list[2].label, 'Camera B');
+  assert.deepEqual(inputDevices([]), []);
+});
+
+test('explicit IDs use exact constraints, default and unselected kinds do not request another input', async () => {
+  const { mediaConstraints } = await media;
+  assert.deepEqual(mediaConstraints({video:true,audio:false},{video:'cam-b',audio:'mic-b'}), {video:{deviceId:{exact:'cam-b'}},audio:false});
+  assert.deepEqual(mediaConstraints({video:false,audio:true},{video:'cam-b',audio:'mic-b'}), {video:false,audio:{deviceId:{exact:'mic-b'}}});
+  assert.deepEqual(mediaConstraints({video:true,audio:true},{video:'',audio:'mic-b'}), {video:true,audio:{deviceId:{exact:'mic-b'}}});
+  assert.equal(mediaConstraints({video:false,audio:false},{video:'invalid',audio:'invalid'}), null);
+});
 
 test('media cleanup stops audio and video and returns ended snapshots', async () => {
   const { stopMediaStream } = await media;
