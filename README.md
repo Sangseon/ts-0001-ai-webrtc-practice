@@ -88,6 +88,8 @@ Step 02 독립 SFU 검증은 별도 실행한다. 실제 송신용 worker는 첫
 
 - [Concept](./docs/Concept.md) — 프로젝트 개요 및 구현 방향
 - [PLAN](./docs/PLAN.md) — Step별 구현 범위와 완료 기준
+- [QC](./docs/QC.md) — Step 01~13 구현 품질 점검표와 후속 개선 기준
+- [QA](./docs/QA.md) — Step 01~13 사용자 수동 인수 절차와 결과 기록 양식
 - [Step 01](./docs/Step01.md) — 실행 방법, 기술 선택 및 검증 결과
 - [Step 02](./docs/Step02.md) — mediasoup 선택과 worker·Router 실행 검증
 - [Step 03](./docs/Step03.md) — WebSocket 세션·프로필 구현과 검증
