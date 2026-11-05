@@ -3,19 +3,32 @@ const { once } = require('node:events');
 const { test } = require('node:test');
 const { WebSocket } = require('ws');
 const { setTimeout: delay } = require('node:timers/promises');
+const clientsByUrl = new Map();
 
 async function setup(t, options) {
   const { createApplication } = await import('../server/dist/application.js');
   const app = createApplication(options);
   app.server.listen(0, '127.0.0.1');
   await once(app.server, 'listening');
-  t.after(() => app.close());
   const port = app.server.address().port;
-  return { ...app, url: `ws://127.0.0.1:${port}/ws`, http: `http://127.0.0.1:${port}` };
+  const url = `ws://127.0.0.1:${port}/ws`;
+  const clients = new Set();
+  clientsByUrl.set(url, clients);
+  t.after(async () => {
+    clientsByUrl.delete(url);
+    const closing = [...clients].filter(socket => socket.readyState !== WebSocket.CLOSED).map(socket => new Promise(resolve => {
+      socket.once('close', resolve);
+      socket.terminate();
+    }));
+    await app.close();
+    await Promise.all(closing);
+  });
+  return { ...app, url, http: `http://127.0.0.1:${port}` };
 }
 
 async function connect(url, options) {
   const socket = new WebSocket(url, options);
+  clientsByUrl.get(url)?.add(socket);
   const queue = [];
   socket.on('error', () => {});
   socket.on('message', data => queue.push(JSON.parse(data.toString())));
