@@ -106,6 +106,7 @@ Step 02 독립 SFU 검증은 별도 실행한다. 실제 송신용 worker는 첫
 - [Step 14](./docs/Step14.md) — 후속 개발 계획 수립 및 QC·QA 검수 기준 문서화
 - [Step 15](./docs/Step15.md) — TypeScript·CommonJS 역할과 strict 검사 범위 점검, 코드 변경 불필요 판단
 - [Step 16](./docs/Step16.md) — WebSocket 테스트 소켓 정리와 Signaling timeout 계측, 간헐 문제 일부 미해결
+- [Step 17](./docs/Step17.md) — 화면 구조·사용자 흐름 설계안 및 사용자 검토 대기
 - [ChatHistory](./docs/ChatHistory.md) — 기존 대화 자동 기록 사용 방법
 
 ## What I Learned
