@@ -153,6 +153,7 @@ module.exports = async ({ chrome: a, edge: b, until, click, selectMedia, waitSta
   await until(() => a.evaluate("document.querySelector('[data-testid=connection-status]').textContent==='연결됨'"), 'new session after close failure');
   await a.evaluate('mediaProbe.originalSend=mediaProbe.socket.send.bind(mediaProbe.socket)');
   await setInput(a, 'room-name', 'timeout-target'); await submit(a, 'room-name');
+  await until(() => a.evaluate("!!document.querySelector('[data-joined-room-id]')"), 'timeout target joined');
   const timeoutRoom = await a.evaluate("document.querySelector('[data-joined-room-id]').dataset.joinedRoomId");
   await select(a, 'sfu-room', timeoutRoom);
   await a.evaluate(`mediaProbe.timeoutProbe={started:performance.now(),dropped:0,closed:false,elapsed:0};mediaProbe.socket.addEventListener('close',()=>{mediaProbe.timeoutProbe.closed=true;mediaProbe.timeoutProbe.elapsed=performance.now()-mediaProbe.timeoutProbe.started;},{once:true});mediaProbe.socket.send=text=>{const r=JSON.parse(text);if(r.type==='media.request'&&r.action==='capabilities'){mediaProbe.timeoutProbe.dropped++;return;}mediaProbe.originalSend(text);}`);

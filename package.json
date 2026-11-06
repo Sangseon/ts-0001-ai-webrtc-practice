@@ -31,6 +31,7 @@
     "test:sfu:multi:browser": "npm run build:server && node scripts/sfu-multi.browser.cjs",
     "test:sfu:controls:browser": "npm run build:server && node scripts/sfu-controls.browser.cjs",
     "test:sfu:devices:browser": "npm run build:server && node scripts/sfu-devices.browser.cjs",
+    "test:dashboard:browser": "npm run build:server && node scripts/dashboard.browser.cjs",
     "test:meter:browser": "npm run build:server && node scripts/microphone-meter.browser.cjs"
   },
   "dependencies": {

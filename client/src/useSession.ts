@@ -43,15 +43,15 @@ export function useSession() {
     mediaListeners.current.add(listener);
     return () => { mediaListeners.current.delete(listener); };
   }, []);
-  const pending = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const pending = useRef<{ id: string; timer: ReturnType<typeof setTimeout>; resolve: (success: boolean) => void } | null>(null);
 
   useEffect(() => {
     const retained = new Set([...participants.map(p => p.participantId), ...messages.map(m => m.participantId)]);
     setProfiles(current => Object.fromEntries(Object.entries({ ...current, ...Object.fromEntries(participants.map(p => [p.participantId, p])) }).filter(([id]) => retained.has(id))));
   }, [participants, messages]);
 
-  function clearPending() {
-    if (pending.current) clearTimeout(pending.current.timer);
+  function clearPending(success = false) {
+    if (pending.current) { clearTimeout(pending.current.timer); pending.current.resolve(success); }
     pending.current = null;
     setSaving(false);
   }
@@ -129,7 +129,7 @@ export function useSession() {
           setError(value.message);
           if (value.requestId === pending.current?.id) clearPending();
         } else if (value.requestId === pending.current?.id) {
-          clearPending();
+          clearPending(true);
           setError('');
           if (value.type === 'profile.update') setNotice('프로필을 변경했습니다.');
           else if (value.type === 'chat.send') setNotice('서버가 채팅 전송을 승인했습니다.');
@@ -166,7 +166,7 @@ export function useSession() {
       active = false;
       rejectMedia();
       clearTimeout(start);
-      if (pending.current) clearTimeout(pending.current.timer);
+      if (pending.current) { clearTimeout(pending.current.timer); pending.current.resolve(false); }
       pending.current = null;
       if (socket) {
         socket.onmessage = null;
@@ -178,23 +178,25 @@ export function useSession() {
     };
   }, [attempt]);
 
-  function sendRequest(command: Command) {
+  function sendRequest(command: Command): Promise<boolean> {
     const socket = socketRef.current;
-    if (status !== 'connected' || !socket || socket.readyState !== WebSocket.OPEN || pending.current) return;
+    if (status !== 'connected' || !socket || socket.readyState !== WebSocket.OPEN || pending.current) return Promise.resolve(false);
     const request: ClientRequest = { kind: 'request', requestId: crypto.randomUUID(), ...command };
     setError('');
     setNotice('');
     setSaving(true);
-    pending.current = { id: request.requestId, timer: setTimeout(() => {
-      clearPending();
-      setError('응답 시간이 초과되어 변경 결과를 확인할 수 없습니다. 다시 연결해주세요.');
-      socket.close();
-    }, 8000) };
-    try { socket.send(JSON.stringify(request)); } catch {
-      clearPending();
-      setError('요청을 보내지 못했습니다.');
-      socket.close();
-    }
+    return new Promise<boolean>(resolve => {
+      pending.current = { id: request.requestId, resolve, timer: setTimeout(() => {
+        clearPending();
+        setError('응답 시간이 초과되어 변경 결과를 확인할 수 없습니다. 다시 연결해주세요.');
+        socket.close();
+      }, 8000) };
+      try { socket.send(JSON.stringify(request)); } catch {
+        clearPending();
+        setError('요청을 보내지 못했습니다.');
+        socket.close();
+      }
+    });
   }
 
   return {

@@ -3,21 +3,21 @@ const assert = require('node:assert/strict');
 const { spawn, fork } = require('node:child_process');
 const { mkdtemp, readFile, rm, realpath } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
-const { join, resolve, dirname } = require('node:path');
+const { join, resolve, dirname, basename } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { WebSocket } = require('ws');
 const children = [], profiles = [], browsers = [];
 const workspace = resolve(__dirname, '..');
 async function until(fn, label) { for (let i = 0; i < 150; i++) { if (await fn()) return; await delay(100); } throw Error('timeout: ' + label); }
-function child(exe, args) {
+function child(exe, args, tracked = true) {
   const p = spawn(exe, args, { cwd: workspace, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  children.push(p); p.stdout.on('data', () => {}); p.stderr.on('data', () => {});
+  if (tracked) children.push(p); p.stdout.on('data', () => {}); p.stderr.on('data', () => {});
   p.on('error', error => console.error(error.message));
   return p;
 }
 const instrumentation = `(() => {
   window.mediaProbe = { calls: 0, streams: [], tracks: [], requests: [], mode: 'native', held: null, options: [] };
-  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1' || process.env.CHECK_SFU_MULTI === '1' || process.env.CHECK_SFU_CONTROL === '1' || process.env.CHECK_MIC_METER === '1'}) {
+  if (${process.env.CHECK_SFU === '1' || process.env.CHECK_SFU_RECEIVE === '1' || process.env.CHECK_SFU_MULTI === '1' || process.env.CHECK_SFU_CONTROL === '1' || process.env.CHECK_MIC_METER === '1' || process.env.CHECK_DASHBOARD === '1'}) {
     const NativeWebSocket=window.WebSocket;
     window.WebSocket=class extends NativeWebSocket {
       constructor(...args){super(...args);if(String(args[0]).endsWith('/ws'))window.mediaProbe.socket=this;}
@@ -40,8 +40,8 @@ const instrumentation = `(() => {
 })();`;
 async function browser(exe) {
   const dir = await mkdtemp(join(tmpdir(), 'webrtc-step06-')); profiles.push(dir);
-  child(exe, ['--headless=new', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', '--user-data-dir=' + dir,
-    process.env.CHECK_SFU_DEVICES === '1' ? '--use-fake-device-for-media-stream=device-count=2,fps=10' : '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--mute-audio', 'about:blank']);
+  const launcher = child(exe, ['--headless=new', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', '--user-data-dir=' + dir,
+    process.env.CHECK_SFU_DEVICES === '1' ? '--use-fake-device-for-media-stream=device-count=2,fps=10' : '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--mute-audio', 'about:blank'], false);
   let port;
   await until(async () => { try { port = Number((await readFile(join(dir, 'DevToolsActivePort'), 'utf8')).split('\n')[0]); return !!port; } catch { return false; } }, 'browser launch');
   const target = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
@@ -64,7 +64,7 @@ async function browser(exe) {
     if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails));
     return result.result?.value;
   };
-  const b = { call, evaluate, ws, exceptions }; browsers.push(b);
+  const b = { call, evaluate, ws, exceptions, launcher, profile: dir }; browsers.push(b);
   await call('Page.enable'); await call('Runtime.enable');
   await call('Page.addScriptToEvaluateOnNewDocument', { source: instrumentation });
   if (process.env.CHECK_SFU_DEVICES === '1') await call('Page.addScriptToEvaluateOnNewDocument', { source: require('./devices.fixture.cjs') });
@@ -209,7 +209,7 @@ async function unmountScenarios(b) {
     catch (error) { if (!error.cause) throw error; }
   }
   let control;
-  if (process.env.CHECK_SFU_MULTI === '1' || process.env.CHECK_SFU_CONTROL === '1') {
+  if (process.env.CHECK_SFU_MULTI === '1' || process.env.CHECK_SFU_CONTROL === '1' || process.env.CHECK_DASHBOARD === '1') {
     const server = fork(join(__dirname, 'sfu-multi-server.cjs'), [], { cwd: workspace, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     children.push(server); server.stdout.on('data', () => {}); server.stderr.on('data', data => process.stderr.write(data));
     let seq=0; const pending=new Map();
@@ -221,7 +221,11 @@ async function unmountScenarios(b) {
   await until(async () => { try { return (await fetch('http://127.0.0.1:3000/health')).ok; } catch { return false; } }, 'HTTP');
   const chrome = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
   const edge = await browser(process.env.EDGE_BIN || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
-  if (process.env.CHECK_MIC_METER === '1') {
+  if (process.env.CHECK_BROWSER_CLEANUP_PROBE === 'failure') throw Error('intentional browser cleanup failure probe');
+  if (process.env.CHECK_BROWSER_CLEANUP_PROBE === 'timeout') await until(() => false, 'intentional browser cleanup timeout probe');
+  if (process.env.CHECK_DASHBOARD === '1') {
+    await require('./dashboard.scenarios.cjs')({ pages: [chrome, edge], until, click, selectMedia, waitState, ended, control });
+  } else if (process.env.CHECK_MIC_METER === '1') {
     const c = await browser(process.env.CHROME_BIN || 'C:/Program Files/Google/Chrome/Application/chrome.exe');
     await require('./microphone-meter.scenarios.cjs')({ pages: [chrome,edge,c], until, click, selectMedia, waitState, ended, control });
   } else if (process.env.CHECK_SFU_DEVICES === '1') {
@@ -262,18 +266,21 @@ async function unmountScenarios(b) {
   }
   // Chrome/Edge may hand the profile to a subprocess after the launcher exits.
   // A closed page also loses its CDP Browser.close channel. Match only our exact
-  // temporary profile paths so that those handed-off processes cannot retain locks.
+  // temporary profile names so Windows 8.3 path aliases cannot retain locks.
   const {execFileSync}=require('node:child_process');
   const ownedBrowsers=()=>JSON.parse(execFileSync('powershell.exe',['-NoProfile','-Command',
     '$profiles=ConvertFrom-Json $env:CODEX_TEST_BROWSER_PROFILES; @(Get-CimInstance Win32_Process | Where-Object { $row=$_; ($row.Name -eq "chrome.exe" -or $row.Name -eq "msedge.exe") -and @($profiles | Where-Object { $row.CommandLine -and $row.CommandLine.Contains($_) }).Count -gt 0 } | Select-Object ProcessId) | ConvertTo-Json -Compress'],
-    {windowsHide:true,encoding:'utf8',env:{...process.env,CODEX_TEST_BROWSER_PROFILES:JSON.stringify(profiles)}}) || '[]');
+    {windowsHide:true,encoding:'utf8',env:{...process.env,CODEX_TEST_BROWSER_PROFILES:JSON.stringify(profiles.map(profile => basename(profile)))}}) || '[]');
   const ownerList=()=>{const rows=ownedBrowsers();return Array.isArray(rows)?rows:rows?[rows]:[];};
-  for(const row of ownerList()) {try{execFileSync('taskkill',['/PID',String(row.ProcessId),'/T','/F'],{windowsHide:true,stdio:'ignore'});}catch{}}
+  const gracefulRemaining=ownerList();
+  for(const row of gracefulRemaining) {try{execFileSync('taskkill',['/PID',String(row.ProcessId),'/T','/F'],{windowsHide:true,stdio:'ignore'});}catch{}}
   await until(()=>ownerList().length===0,'owned browser subprocesses exit');
+  await until(()=>browsers.every(browser=>browser.launcher.exitCode!==null || browser.launcher.signalCode!==null),'browser launcher exit');
   const base = await realpath(tmpdir());
   for (const dir of profiles) {
     const target = await realpath(dir);
     if (dirname(target).toLowerCase() !== base.toLowerCase() || !target.toLowerCase().includes('webrtc-step06-')) throw Error('Unexpected temporary profile path');
     await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
+  console.log('BROWSER_CLEANUP '+JSON.stringify({profiles:profiles.length,gracefulRemaining:gracefulRemaining.length,remaining:ownerList().length,launchers:browsers.map(browser=>({pid:browser.launcher.pid,exitCode:browser.launcher.exitCode,signal:browser.launcher.signalCode}))}));
 });

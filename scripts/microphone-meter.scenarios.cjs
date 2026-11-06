@@ -49,10 +49,10 @@ module.exports = async ({ pages, until, click, selectMedia, waitState, control }
   assert.equal(await a.evaluate("mediaProbe.tracks.every(t=>t.readyState==='ended')"),true);
   await click(a,'meter-start');await meterState(a,'running');assert.equal((await status(a)).deviceId,'mock-mic-b');
   await select(a,'device-audio','mock-mic-a');assert.equal((await status(a)).deviceId,'mock-mic-b');
-  await until(()=>a.evaluate("document.body.innerText.includes('선택값이 변경됐지만 분석 대상은 이전 장치')"),'selection is not automatic analysis switch');
+  await until(()=>a.evaluate("document.querySelector('#devices').textContent.includes('선택값이 변경됐지만 분석 대상은 이전 장치')"),'selection is not automatic analysis switch');
   await click(a,'meter-stop');await meterState(a,'idle');await click(a,'meter-start');await meterState(a,'running');assert.equal((await status(a)).deviceId,'mock-mic-a');
   await a.evaluate("mediaProbe.removedDevice='mock-mic-a';navigator.mediaDevices.dispatchEvent(new Event('devicechange'))");
-  await until(()=>a.evaluate("document.body.innerText.includes('선택한 장치가 목록에 없습니다')"),'removed selected microphone warning');
+  await until(()=>a.evaluate("document.querySelector('#devices').textContent.includes('선택한 장치가 목록에 없습니다')"),'removed selected microphone warning');
   assert.equal((await status(a)).deviceId,'mock-mic-a');
   await a.evaluate("mediaProbe.removedDevice='';navigator.mediaDevices.dispatchEvent(new Event('devicechange'))");
   await a.evaluate("(()=>{const t=mediaProbe.streams.at(-1).getAudioTracks()[0];t.stop();t.dispatchEvent(new Event('ended'));})()");await meterState(a,'error');
