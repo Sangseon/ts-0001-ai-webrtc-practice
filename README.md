@@ -17,6 +17,8 @@ SFU 단일 활성 회의방 송신도 구현했으며, Chrome·Edge 가상 장�
 
 Learning Repository의 `practice` 유형이며, Repository 이름은 `ts-0001-ai-webrtc-practice`다.
 
+바이브 코딩 후기는 [Vibe Coding Review](./docs/Review.md)에 정리했습니다.
+
 ### Topics
 
 - typescript
