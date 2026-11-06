@@ -60,7 +60,7 @@
 | --- | --- | --- |
 | QC-001~003 | `package.json` 스크립트, 추적 파일과 `.gitignore`를 대조했다. client/server의 제품 TS, scripts의 테스트·Hook, `dist` 산출물이 분리된다. | 명확한 중복 제품 코드나 추적 산출물 없음. 낮음 |
 | QC-004~005 | 두 tsconfig가 strict를 상속하며 이번 `typecheck`가 통과했다. `rg`로 `client/src`, `server/src`의 명시적 `any`, `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`를 찾지 못했다. | 제품 코드 검사 범위 적절. `as` 단언은 별도 검토. 낮음 |
-| QC-006~008 | `server/src/shared/{protocol,mediaProtocol}.ts`가 메시지 계약·런타임 필드 검증을 공유하고, `application.ts`가 `maxPayload: 4096`과 세션 participantId를 권한 기준으로 사용한다. `useSession.ts`와 `useSfuSender.ts`는 응답·이벤트의 세대/ID를 확인한다. | 정적 계약만으로 네트워크 입력을 신뢰하지 않는 구조. 특정 경합의 전체 인수는 Step 19 범위 |
+| QC-006~008 | `server/src/shared/{protocol,mediaProtocol}.ts`가 메시지 계약·런타임 필드 검증을 공유하고, `application.ts`가 `maxPayload: 4096`과 세션 participantId를 권한 기준으로 사용한다. `useSession.ts`와 `useSfuSender.ts`는 응답·이벤트의 세대/ID를 확인한다. | 정적 계약만으로 네트워크 입력을 신뢰하지 않는 구조. 특정 경합의 전체 인수는 당시 Step 19 계획 범위였으나 미수행 |
 | QC-009~010 | `.cjs`는 `scripts/`에 한정되며 위 표의 진입·fixture·시나리오 의존성이 확인된다. | 타입 사각지대는 사실이나 즉시 전환 근거 없음. 낮음 |
 | QC-011~017 | `application.ts`는 세션·룸·미디어 서비스를 연결하고, `rooms.ts`가 논리 소속을, `media.ts`가 단일 worker·방별 Router와 활성 mediaId·Transport·Producer·Consumer 소유권을 관리한다. | 책임 분리가 확인됨. 종료 순서의 간헐 문제는 Step 16. 보통 |
 | QC-018~020 | `useLocalMedia.ts`가 Track/MediaStream 소유와 이전 트랙 stop을 담당하며, `useSfuSender.ts`는 `stopTracks:false`인 Producer와 원격 Consumer를 관리한다. `useMediaDevices.ts`는 `devicechange` 리스너를 제거하고, `useMicrophoneMeter.ts`는 RAF·ended·AudioContext 관련 자원을 정리한다. | 소유권 경계 확인. 전체 사용자 동작 재검증은 수행하지 않음 |
@@ -89,4 +89,4 @@
 
 현재 제품 코드는 TypeScript/TSX 중심이며 strict 검사에 포함된다. CommonJS는 테스트·브라우저 자동화·기록 도구에 한정되고 현행 Node 실행 계약에 맞으므로 유지한다. **실제 코드 수정은 필요하지 않다고 판단한다.** strict 밖의 테스트 코드와 두 타입 단언은 한계로 남긴다. 본 Step의 구조 분석·근거 기록·문서 검증 범위는 완료했으며, 전체 QC와 사용자 수동 QA는 수행하지 않았다.
 
-[Step 16](./PLAN.md)은 `test:ws` 러너 비종료 및 Signaling timeout의 재현·원인·정리 개선을 맡는다. 대규모 `.cjs` 전환이나 테스트 하네스 재설계는 현재 근거로 제안하지 않는다. [Step 19](./PLAN.md)에서 전체 QC·QA를 실제 증거로 판정해야 한다.
+[Step 16](./Step16.md)에서 `test:ws` 러너 비종료 및 Signaling timeout의 재현·원인·정리 개선을 조사했다. 대규모 `.cjs` 전환이나 테스트 하네스 재설계는 당시 근거로 제안하지 않았다. 전체 QC·QA는 당초 Step 19에서 판정할 계획이었으나, 프로젝트 개발을 Step 18에서 종료해 수행하지 않았다.
